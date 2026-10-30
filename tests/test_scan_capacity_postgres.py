@@ -46,11 +46,11 @@ def postgres_reservations(monkeypatch):
                     last_scan_started_at TIMESTAMPTZ NOT NULL
                 )
             """)
-            conn.executemany(
+            conn.cursor().executemany(
                 "INSERT INTO scan_slots(slot_id) VALUES (%s)",
                 [(slot,) for slot in range(1, main.MAX_CONCURRENT_SCANS + 1)],
             )
-            conn.executemany(
+            conn.cursor().executemany(
                 "INSERT INTO domains(id, domain) VALUES (%s, %s)",
                 [(n, f"host{n}.example") for n in range(1, 21)],
             )
