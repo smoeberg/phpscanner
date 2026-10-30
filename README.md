@@ -1,26 +1,81 @@
 # DK PHP Exposure Scanner
 
-Initial repository baseline for the Athos production MVP. The repository is the source of truth for reviewed development; production deployment remains a separate, approved operation.
+A non-invasive MVP for collecting HTTP(S) observations from explicitly
+submitted domains. This project is not a CVE scanner and does not establish
+whether a server is vulnerable.
 
-The application is a non-invasive HTTP(S) observation service for explicitly submitted domains. It is not a CVE scanner and does not establish whether a server is vulnerable.
+## Architecture
 
-## Current baseline
-
-- FastAPI and PostgreSQL
+- FastAPI application
+- PostgreSQL database
 - Docker Compose deployment
-- API key authentication for administrative endpoints
-- API bound to localhost on Athos (`127.0.0.1:8787`)
-- Redirect following disabled and TLS verification enabled
-- DNS validation is present, but connection-level DNS pinning is not yet implemented
+- API key authentication using X-API-Key
+- Host API binding restricted to 127.0.0.1:8787
+- Explicit domain import and individually initiated scans
 
-## Security and development status
+## Safety model
 
-This is an MVP, not a production-ready national scanning platform. Known limitations include DNS rebinding protection, authoritative PHP/vendor advisory data, local runtime assessment, automated security tests, rate limiting, and a complete authorization/audit model.
+- Only scans explicitly imported domains.
+- Makes ordinary HTTP(S) GET requests.
+- Redirect following is disabled.
+- TLS certificate verification is enabled.
+- Rejects destinations resolving to non-public IP addresses.
+- No exploit payloads, port scanning, crawling, brute force or exploitation.
+- PHP/version observations are indicators, not proof of vulnerability.
+- Does not modify Apache, firewalls, existing containers or databases.
 
-Never infer vulnerability or patch status solely from an externally observed PHP version or response header.
+DNS rebinding protection and connection pinning require further hardening.
+Current DNS validation is not a complete egress security boundary.
 
-## Secrets and production data
+## Authentication
 
-Never commit `.env`, API credentials, database dumps, production data, backups, or private keys. Use `.env.example` only as a template.
+All administrative API endpoints require the X-API-Key header.
+The /health endpoint is public.
 
-See `INSTALL-ATHOS.md` for deployment guidance. Changes must be reviewed and tested before deployment to Athos.
+The API should remain accessible only through localhost and an SSH tunnel
+until a separately reviewed public-access architecture is implemented.
+
+## Installation
+
+1. Create .env only if it does not already exist: `cp -n .env.example .env`.
+2. Generate independent random values for POSTGRES_PASSWORD and
+   SCANNER_API_KEY using openssl rand -hex 32.
+3. Configure both values in .env.
+4. Restrict access to .env using chmod 600 .env.
+5. Validate and start the services:
+
+   docker compose config --quiet
+   docker compose up -d --build
+   docker compose ps
+
+6. Open an SSH tunnel:
+
+   ssh -L 8787:127.0.0.1:8787 root@YOUR_SERVER
+
+7. Open http://127.0.0.1:8787/docs.
+
+Administrative API requests must include the X-API-Key header.
+
+Never commit .env, database dumps, production data or API credentials.
+
+## Current limitations
+
+This is an MVP, not a production-ready national scanning platform.
+
+Not yet implemented:
+
+- Hardened DNS pinning and connection-level destination enforcement
+- Authoritative PHP/vendor advisory database
+- CVE and distribution-specific package assessment
+- Local read-only PHP runtime agent
+- Background job queue and scheduling
+- Global rate limiting and retry policy
+- Comprehensive automated security and integration tests
+- Full audit and authorization model for multiple users
+
+No vulnerability conclusion should be derived solely from an externally
+observed PHP version or response header.
+
+## Development
+
+See INSTALL-ATHOS.md for the Athos deployment procedure.
