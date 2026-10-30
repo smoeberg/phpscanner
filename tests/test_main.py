@@ -2,9 +2,11 @@ import socket
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app.main import (
     DomainImport,
+    app,
     normalize_domain,
     require_api_key,
     resolve_public_ips,
@@ -63,6 +65,20 @@ def test_api_key_rejects_missing_or_wrong_key(provided):
     with pytest.raises(HTTPException) as exc:
         require_api_key(provided)
     assert exc.value.status_code == 401
+
+
+def test_protected_domains_endpoint_rejects_missing_api_key():
+    response = TestClient(app).get("/domains")
+    assert response.status_code == 401
+
+
+def test_protected_import_endpoint_rejects_wrong_api_key():
+    response = TestClient(app).post(
+        "/domains/import",
+        headers={"X-API-Key": "wrong-secret"},
+        json={"domains": ["example.com"]},
+    )
+    assert response.status_code == 401
 
 
 def _addrinfo(ip):
