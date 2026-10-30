@@ -1,7 +1,14 @@
+import socket
+
 import pytest
 from fastapi import HTTPException
 
-from app.main import DomainImport, normalize_domain, require_api_key
+from app.main import (
+    DomainImport,
+    normalize_domain,
+    require_api_key,
+    resolve_public_ips,
+)
 
 
 @pytest.mark.parametrize(
@@ -56,3 +63,50 @@ def test_api_key_rejects_missing_or_wrong_key(provided):
     with pytest.raises(HTTPException) as exc:
         require_api_key(provided)
     assert exc.value.status_code == 401
+
+
+def _addrinfo(ip):
+    family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+    sockaddr = (ip, 0, 0, 0) if family == socket.AF_INET6 else (ip, 0)
+    return (family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)
+
+
+def test_resolve_public_ips_returns_unique_public_addresses(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            _addrinfo("8.8.8.8"),
+            _addrinfo("1.1.1.1"),
+            _addrinfo("8.8.8.8"),
+        ],
+    )
+
+    assert resolve_public_ips("example.com") == ["1.1.1.1", "8.8.8.8"]
+
+
+@pytest.mark.parametrize("private_ip", ["127.0.0.1", "10.0.0.1", "169.254.1.1", "::1", "fc00::1"])
+def test_resolve_public_ips_rejects_non_public_addresses(monkeypatch, private_ip):
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *args, **kwargs: [_addrinfo("8.8.8.8"), _addrinfo(private_ip)]
+    )
+
+    with pytest.raises(RuntimeError, match="ikke-offentlig IP"):
+        resolve_public_ips("example.com")
+
+
+def test_resolve_public_ips_rejects_empty_dns_answer(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: [])
+
+    with pytest.raises(RuntimeError, match="Ingen DNS-adresser"):
+        resolve_public_ips("example.com")
+
+
+def test_resolve_public_ips_wraps_dns_errors(monkeypatch):
+    def fail_lookup(*args, **kwargs):
+        raise socket.gaierror("temporary DNS failure")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_lookup)
+
+    with pytest.raises(RuntimeError, match="DNS-opslag fejlede"):
+        resolve_public_ips("example.com")
