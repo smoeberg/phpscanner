@@ -323,6 +323,25 @@ def test_probe_sanitizes_and_classifies_failures(monkeypatch, failure, expected_
     assert result["version_observed"] is None
 
 
+@pytest.mark.parametrize("value", ["=1+1", "+SUM(A1:A2)", "-1+2", "@SUM(A1)", "  =1+1", "\t=1+1", "\r=1+1"])
+def test_safe_csv_cell_neutralizes_formula_prefixes(value):
+    from app.main import _safe_csv_cell
+
+    safe = _safe_csv_cell(value)
+    if value.startswith(("\t", "\r", "\n")):
+        # A leading control character is neutralized at the start of the cell.
+        assert safe == "'" + value
+    else:
+        assert safe.endswith("'" + value.lstrip(" "))
+    assert safe != value
+
+@pytest.mark.parametrize("value", ["example.com", "PHP/8.3", "ordinary text", 0, 200, True, None])
+def test_safe_csv_cell_preserves_non_formula_values(value):
+    from app.main import _safe_csv_cell
+
+    assert _safe_csv_cell(value) == value
+
+
 def test_results_csv_streams_bounded_batches_without_fetchall(monkeypatch):
     class FakeCursor:
         def __init__(self):

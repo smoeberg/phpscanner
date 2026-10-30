@@ -293,6 +293,19 @@ def results(limit: int = 100, offset: int = 0):
              "confidence": r[8], "notes": r[9]} for r in rows]
 
 
+def _safe_csv_cell(value):
+    """Neutralize spreadsheet formulas in untrusted textual CSV cells."""
+    if not isinstance(value, str):
+        return value
+    if value.startswith(("\t", "\r", "\n")):
+        return "'" + value
+    stripped = value.lstrip(" ")
+    if stripped.startswith(("=", "+", "-", "@")):
+        prefix_length = len(value) - len(stripped)
+        return value[:prefix_length] + "'" + stripped
+    return value
+
+
 @app.get("/results.csv", dependencies=[Depends(require_api_key)])
 def results_csv():
     import csv
@@ -321,7 +334,7 @@ def results_csv():
                 while rows := cursor.fetchmany(500):
                     buffer.seek(0)
                     buffer.truncate(0)
-                    writer.writerows(rows)
+                    writer.writerows(tuple(_safe_csv_cell(value) for value in row) for row in rows)
                     yield buffer.getvalue()
 
     return StreamingResponse(
