@@ -108,7 +108,8 @@ def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str,
     ip = ipaddress.ip_address(ip_text)
     authority = f"[{ip}]" if ip.version == 6 else str(ip)
     url = f"{scheme}://{authority}/"
-    return url, {"Host": domain}, {"sni_hostname": domain}
+    # httpcore expects the SNI override as bytes (not str).
+    return url, {"Host": domain}, {"sni_hostname": domain.encode("ascii")}
 
 
 async def probe(domain: str) -> dict:
