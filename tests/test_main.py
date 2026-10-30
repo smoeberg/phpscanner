@@ -211,9 +211,9 @@ def test_probe_sends_request_to_pinned_ip_with_original_host_and_tls_name(monkey
 
     result = asyncio.run(main.probe("example.com"))
 
-    assert observed["url"].host == "8.8.8.8"
+    assert observed["url"].host == "example.com"
     assert observed["host"] == "example.com"
-    assert observed["sni_hostname"] == b"example.com"
+    assert observed["sni_hostname"] is None
     assert result["status_code"] == 200
     assert result["version_observed"] == "8.2.1"
 
@@ -650,3 +650,27 @@ def test_verify_domain_fails_closed_when_dns_lookup_errors(monkeypatch):
     assert response.json()["detail"] == "DNS TXT-verifikation kunne ikke bekræftes"
     assert "resolver internals" not in response.text
     assert state["token_hash"] is not None
+
+
+
+def test_pinned_network_backend_connects_only_to_approved_ip(monkeypatch):
+    backend = main._PinnedNetworkBackend("example.com", "8.8.8.8")
+    observed = {}
+
+    async def connect_tcp(host, port, **kwargs):
+        observed["host"] = host
+        observed["port"] = port
+        return "stream"
+
+    monkeypatch.setattr(backend._backend, "connect_tcp", connect_tcp)
+    result = asyncio.run(backend.connect_tcp("example.com", 443, timeout=3))
+
+    assert result == "stream"
+    assert observed == {"host": "8.8.8.8", "port": 443}
+
+
+def test_pinned_network_backend_rejects_unexpected_hostname():
+    backend = main._PinnedNetworkBackend("example.com", "8.8.8.8")
+
+    with pytest.raises(Exception, match="Unexpected destination host"):
+        asyncio.run(backend.connect_tcp("attacker.example", 443, timeout=3))
