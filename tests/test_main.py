@@ -614,7 +614,8 @@ def test_verify_domain_rejects_replayed_challenge(monkeypatch):
     state = _verification_test_state()
     _install_verification_db(monkeypatch, state)
 
-    async def resolve(_name, _record_type, _lifetime):
+    async def resolve(_name, _record_type, lifetime):
+        assert lifetime == 5
         return _txt_answer(f"dk-php-scanner-verification={state['token']}")
 
     monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
@@ -628,3 +629,24 @@ def test_verify_domain_rejects_replayed_challenge(monkeypatch):
     assert first.status_code == 200
     assert second.status_code == 400
     assert second.json()["detail"] == "Verifikationschallenge mangler eller er udløbet"
+
+
+def test_verify_domain_fails_closed_when_dns_lookup_errors(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state)
+
+    async def fail_resolve(*_args, **_kwargs):
+        raise TimeoutError("resolver internals must not leak")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", fail_resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "DNS TXT-verifikation kunne ikke bekræftes"
+    assert "resolver internals" not in response.text
+    assert state["token_hash"] is not None
