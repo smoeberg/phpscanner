@@ -546,7 +546,7 @@ def test_verify_domain_accepts_matching_dns_txt_and_consumes_challenge(monkeypat
     _install_verification_db(monkeypatch, state)
 
     async def resolve(name, record_type, lifetime):
-        assert name == "_dk-php-scanner-verification.example.com"
+        assert name == "_dk-php-scanner-verification.example.com."
         assert record_type == "TXT"
         assert lifetime == 5
         return _txt_answer(f"dk-php-scanner-verification={state['token']}")
@@ -674,3 +674,54 @@ def test_pinned_network_backend_rejects_unexpected_hostname():
 
     with pytest.raises(Exception, match="Unexpected destination host"):
         asyncio.run(backend.connect_tcp("attacker.example", 443, timeout=3))
+
+
+
+def test_verify_domain_returns_conflict_when_another_request_consumed_challenge(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state, update_succeeds=False)
+
+    async def resolve(_name, _record_type, lifetime):
+        return _txt_answer(f"dk-php-scanner-verification={state['token']}")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Challenge er udløbet eller allerede anvendt"
+
+
+def test_list_domains_exposes_verification_state_without_challenge_secrets(monkeypatch):
+    from datetime import datetime, timezone
+
+    verified_at = datetime.now(timezone.utc)
+
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            assert "verified_at" in query
+            assert "verification_token_hash" not in query
+            assert "verification_expires_at" not in query
+            return self
+        def fetchall(self): return [(7, "example.com", "manual", verified_at, None)]
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).get("/domains", headers={"X-API-Key": "test-secret"})
+
+    assert response.status_code == 200
+    assert response.json() == [{
+        "id": 7,
+        "domain": "example.com",
+        "source": "manual",
+        "created_at": verified_at.isoformat(),
+        "verified_at": None,
+        "verified": False,
+    }]

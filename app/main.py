@@ -315,7 +315,7 @@ async def verify_domain_control(domain_id: int):
     if not token_hash or not expires_at or expires_at <= now:
         raise HTTPException(400, "Verifikationschallenge mangler eller er udløbet")
     try:
-        answers = await dns.asyncresolver.resolve(f"_dk-php-scanner-verification.{domain}", "TXT", lifetime=5)
+        answers = await dns.asyncresolver.resolve(f"_dk-php-scanner-verification.{domain}.", "TXT", lifetime=5)
         valid = False
         for answer in answers:
             value = b"".join(answer.strings).decode("utf-8", errors="strict")
@@ -345,15 +345,15 @@ def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
     with db_connect() as conn:
         if q:
             rows = conn.execute(
-                "SELECT id, domain, source, created_at FROM domains WHERE domain ILIKE %s ORDER BY domain LIMIT %s OFFSET %s",
+                "SELECT id, domain, source, created_at, verified_at FROM domains WHERE domain ILIKE %s ORDER BY domain LIMIT %s OFFSET %s",
                 (f"%{q[:253]}%", limit, offset),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, domain, source, created_at FROM domains ORDER BY domain LIMIT %s OFFSET %s",
+                "SELECT id, domain, source, created_at, verified_at FROM domains ORDER BY domain LIMIT %s OFFSET %s",
                 (limit, offset),
             ).fetchall()
-    return [{"id": r[0], "domain": r[1], "source": r[2], "created_at": r[3].isoformat()} for r in rows]
+    return [{"id": r[0], "domain": r[1], "source": r[2], "created_at": r[3].isoformat(), "verified_at": r[4].isoformat() if r[4] else None, "verified": r[4] is not None} for r in rows]
 
 
 @app.post("/domains/{domain_id}/scan", dependencies=[Depends(require_api_key)])
