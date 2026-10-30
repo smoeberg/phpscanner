@@ -271,16 +271,37 @@ def results(limit: int = 100, offset: int = 0):
 
 @app.get("/results.csv", dependencies=[Depends(require_api_key)])
 def results_csv():
+    import csv
+    import io
     from fastapi.responses import StreamingResponse
-    import csv, io
-    with db_connect() as conn:
-        rows = conn.execute("""
-            SELECT d.domain,s.scanned_at,s.status_code,s.server_header,s.powered_by,s.php_indicator,
-                   s.version_observed,s.confidence,s.notes
-            FROM scans s JOIN domains d ON d.id=s.domain_id ORDER BY s.scanned_at DESC
-        """).fetchall()
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["domain", "scanned_at", "status_code", "server_header", "x_powered_by", "php_indicator", "version_observed", "confidence", "notes"])
-    writer.writerows(rows)
-    return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=dk-php-scanner-results.csv"})
+
+    columns = [
+        "domain", "scanned_at", "status_code", "server_header", "x_powered_by",
+        "php_indicator", "version_observed", "confidence", "notes",
+    ]
+
+    def generate_csv():
+        # A named psycopg cursor keeps the result set on the PostgreSQL server;
+        # fetchmany bounds application memory while the response is streamed.
+        with db_connect() as conn:
+            with conn.cursor(name="scanner_csv_export") as cursor:
+                cursor.execute("""
+                    SELECT d.domain,s.scanned_at,s.status_code,s.server_header,s.powered_by,s.php_indicator,
+                           s.version_observed,s.confidence,s.notes
+                    FROM scans s JOIN domains d ON d.id=s.domain_id ORDER BY s.scanned_at DESC
+                """)
+                buffer = io.StringIO()
+                writer = csv.writer(buffer)
+                writer.writerow(columns)
+                yield buffer.getvalue()
+                while rows := cursor.fetchmany(500):
+                    buffer.seek(0)
+                    buffer.truncate(0)
+                    writer.writerows(rows)
+                    yield buffer.getvalue()
+
+    return StreamingResponse(
+        generate_csv(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=dk-php-scanner-results.csv"},
+    )
