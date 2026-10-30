@@ -765,3 +765,64 @@ def test_pinned_backend_rejects_unexpected_hostname():
             await backend.connect_tcp(b"attacker.test", 443)
 
     asyncio.run(attempt())
+
+
+@pytest.mark.parametrize("reservation", [None])
+def test_scan_returns_rate_limit_when_capacity_or_cooldown_denies(monkeypatch, reservation):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, _query, _params): return self
+        def fetchone(self): return (7, "example.com", datetime.now(timezone.utc))
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: reservation)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 429
+    assert response.json()["detail"] == "Scanning er midlertidigt begrænset; prøv igen senere"
+
+
+def test_scan_fails_closed_when_capacity_database_fails(monkeypatch):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, _query, _params): return self
+        def fetchone(self): return (7, "example.com", datetime.now(timezone.utc))
+
+    def fail_reservation(_domain_id):
+        raise RuntimeError("database internals must not leak")
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "reserve_scan_capacity", fail_reservation)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 503
+    assert "database internals" not in response.text
+
+
+def test_scan_releases_reserved_slot_after_probe(monkeypatch):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            self.query = query
+            return self
+        def fetchone(self):
+            if "SELECT id, domain, verified_at" in self.query:
+                return (7, "example.com", datetime.now(timezone.utc))
+            return (42, datetime.now(timezone.utc))
+
+    released = []
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: 3)
+    monkeypatch.setattr(main, "release_scan_capacity", released.append)
+    async def fake_probe(_domain):
+        return {"status_code": 200, "final_url": "https://example.com/", "server_header": "",
+                "powered_by": "", "php_indicator": False, "version_observed": None,
+                "confidence": "unknown", "notes": "test"}
+    monkeypatch.setattr(main, "probe", fake_probe)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 200
+    assert released == [3]
