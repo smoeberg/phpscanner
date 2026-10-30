@@ -128,6 +128,27 @@ def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str,
     return url, {"Host": domain}, {"sni_hostname": domain.encode("ascii")}
 
 
+async def _read_response_body_limited(response: httpx.Response, max_bytes: int) -> tuple[int, bool]:
+    """Discard a response body while enforcing a decoded-byte processing limit.
+
+    The body is never retained. HTTPX yields bounded chunks, and iteration stops
+    as soon as the configured limit would be exceeded.
+    """
+    if max_bytes < 0:
+        raise ValueError("MAX_RESPONSE_BYTES must not be negative")
+
+    consumed = 0
+    truncated = False
+    async for chunk in response.aiter_bytes(chunk_size=8192):
+        remaining = max_bytes - consumed
+        if len(chunk) > remaining:
+            consumed += remaining
+            truncated = True
+            break
+        consumed += len(chunk)
+    return consumed, truncated
+
+
 async def probe(domain: str) -> dict:
     errors: list[str] = []
     for scheme in ("https", "http"):
@@ -164,6 +185,9 @@ async def probe(domain: str) -> dict:
                     else:
                         confidence = "version-disclosed" if version else ("possible-php" if indicator else "unknown")
                         status_note = ""
+                    _body_bytes, body_truncated = await _read_response_body_limited(response, MAX_BYTES)
+                    if body_truncated:
+                        status_note += (" " if status_note else "") + f"Response body blev afkortet ved {MAX_BYTES} bytes."
                     return {
                         "status_code": response.status_code,
                         "final_url": url,
