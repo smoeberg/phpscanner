@@ -160,9 +160,13 @@ def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str,
     return f"{scheme}://{authority}/", {"Host": domain}, {"sni_hostname": domain.encode("ascii")}
 
 
-def _pinned_transport(domain: str, ip_text: str) -> httpx.AsyncHTTPTransport:
-    """Build a transport whose TCP backend cannot resolve or connect elsewhere."""
-    transport = httpx.AsyncHTTPTransport(verify=True)
+def _pinned_transport(domain: str, ip_text: str, *, verify=True) -> httpx.AsyncHTTPTransport:
+    """Build a transport whose TCP backend cannot resolve or connect elsewhere.
+
+    ``verify`` is injectable for isolated integration tests; production callers
+    use the secure default (certificate and hostname verification enabled).
+    """
+    transport = httpx.AsyncHTTPTransport(verify=verify)
     # httpx 0.28/httpcore 1.x exposes this backend seam on its connection pool.
     # Keeping the URL hostname intact makes httpcore perform SNI and certificate
     # hostname verification against the submitted domain, not the pinned IP.
