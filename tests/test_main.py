@@ -179,3 +179,39 @@ def test_probe_sends_request_to_pinned_ip_with_original_host_and_tls_name(monkey
     assert observed["sni_hostname"] == b"example.com"
     assert result["status_code"] == 200
     assert result["version_observed"] == "8.2.1"
+
+
+
+def test_probe_ignores_php_version_mentioned_only_in_response_body(monkeypatch):
+    async def handler(_request):
+        return httpx.Response(200, content=b"<html>Powered by PHP 5.6.40</html>")
+
+    real_async_client = httpx.AsyncClient
+
+    def client_with_mock_transport(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    monkeypatch.setattr(main.httpx, "AsyncClient", client_with_mock_transport)
+    result = asyncio.run(main.probe("example.com"))
+    assert result["version_observed"] is None
+    assert result["php_indicator"] is False
+    assert result["confidence"] == "unknown"
+
+
+def test_probe_uses_x_powered_by_for_php_version(monkeypatch):
+    async def handler(_request):
+        return httpx.Response(200, headers={"x-powered-by": "PHP/8.3.4"}, content=b"PHP 5.6.40")
+
+    real_async_client = httpx.AsyncClient
+
+    def client_with_mock_transport(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    monkeypatch.setattr(main.httpx, "AsyncClient", client_with_mock_transport)
+    result = asyncio.run(main.probe("example.com"))
+    assert result["version_observed"] == "8.3.4"
+    assert result["php_indicator"] is True
