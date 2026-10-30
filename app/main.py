@@ -70,6 +70,13 @@ def normalize_domain(raw: str) -> str:
     if not value or len(value) > 253 or "/" in value or ":" in value or "@" in value:
         raise ValueError("Ugyldigt domæne")
     try:
+        # This endpoint accepts hostnames, not IP-literal scan targets.
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("IP-adresser accepteres ikke; angiv et domænenavn")
+    try:
         value.encode("idna").decode("ascii")
     except UnicodeError as exc:
         raise ValueError("Ugyldigt domænenavn") from exc
