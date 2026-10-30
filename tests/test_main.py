@@ -481,3 +481,150 @@ def test_challenge_returns_dns_record_and_stores_only_hash(monkeypatch):
     token = data["record_value"].split("=", 1)[1]
     assert captured["params"][0] == hashlib.sha256(token.encode()).hexdigest()
     assert token not in captured["params"][0]
+
+
+
+def _verification_test_state():
+    from datetime import datetime, timedelta, timezone
+    import hashlib
+
+    token = "test-verification-token"
+    return {
+        "domain": "example.com",
+        "token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+        "token": token,
+    }
+
+
+def _install_verification_db(monkeypatch, state, *, update_succeeds=True):
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params):
+            self.query = query
+            self.params = params
+            if query.startswith("UPDATE domains SET verified_at"):
+                if (
+                    update_succeeds
+                    and state["token_hash"] == params[2]
+                    and state["expires_at"] > params[3]
+                ):
+                    state["verified_at"] = params[0]
+                    state["token_hash"] = None
+                    state["expires_at"] = None
+                    self.result = (state["domain"],)
+                else:
+                    self.result = None
+            else:
+                self.result = (
+                    state["domain"],
+                    state["token_hash"],
+                    state["expires_at"],
+                )
+            return self
+
+        def fetchone(self):
+            return self.result
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+
+
+def _txt_answer(value):
+    class FakeTxtRecord:
+        strings = [value.encode("utf-8")]
+
+    return [FakeTxtRecord()]
+
+
+def test_verify_domain_accepts_matching_dns_txt_and_consumes_challenge(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state)
+
+    async def resolve(name, record_type, lifetime):
+        assert name == "_dk-php-scanner-verification.example.com"
+        assert record_type == "TXT"
+        assert lifetime == 5
+        return _txt_answer(f"dk-php-scanner-verification={state['token']}")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["verified"] is True
+    assert response.json()["domain"] == "example.com"
+    assert state["verified_at"] is not None
+    assert state["token_hash"] is None
+    assert state["expires_at"] is None
+
+
+def test_verify_domain_rejects_wrong_dns_txt(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state)
+
+    async def resolve(*_args, **_kwargs):
+        return _txt_answer("dk-php-scanner-verification=wrong-token")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "DNS TXT-verifikation kunne ikke bekræftes"
+    assert state["token_hash"] is not None
+    assert state.get("verified_at") is None
+
+
+def test_verify_domain_rejects_expired_challenge_without_dns_lookup(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    state = _verification_test_state()
+    state["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    _install_verification_db(monkeypatch, state)
+
+    async def unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("DNS must not be queried for an expired challenge")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", unexpected_resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Verifikationschallenge mangler eller er udløbet"
+
+
+def test_verify_domain_rejects_replayed_challenge(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state)
+
+    async def resolve(_name, _record_type, _lifetime):
+        return _txt_answer(f"dk-php-scanner-verification={state['token']}")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(app)
+    headers = {"X-API-Key": "test-secret"}
+
+    first = client.post("/domains/7/verify", headers=headers)
+    second = client.post("/domains/7/verify", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 400
+    assert second.json()["detail"] == "Verifikationschallenge mangler eller er udløbet"
