@@ -158,12 +158,23 @@ async def probe(domain: str) -> dict:
                         "confidence": confidence,
                         "notes": "HTTP-redirects følges ikke; offentlig signaturkontrol, ikke en sårbarhedsbekræftelse. " + status_note,
                     }
-        except Exception as exc:
-            errors.append(f"{scheme}: {str(exc)[:180]}")
+        except httpx.TimeoutException:
+            errors.append(f"{scheme}: timeout")
+        except httpx.ConnectError:
+            errors.append(f"{scheme}: connection-failed")
+        except httpx.TransportError:
+            errors.append(f"{scheme}: transport-failed")
+        except RuntimeError:
+            # DNS failures and rejected non-public destinations are reported
+            # without exposing resolver details or internal exception text.
+            errors.append(f"{scheme}: dns-or-destination-rejected")
+        except Exception:
+            # Keep unexpected implementation details out of persisted scan results.
+            errors.append(f"{scheme}: internal-error")
     return {
         "status_code": None, "final_url": None, "server_header": "", "powered_by": "",
         "php_indicator": False, "version_observed": None, "confidence": "unreachable",
-        "notes": "; ".join(errors)[:1000],
+        "notes": "Forespørgslen kunne ikke gennemføres: " + "; ".join(errors),
     }
 
 
