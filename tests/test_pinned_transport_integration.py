@@ -63,9 +63,7 @@ def test_pinned_transport_uses_real_peer_and_tls_hostname(
                 writer.close()
                 await writer.wait_closed()
 
-        server = await asyncio.start_server(
-            handle, "127.0.0.1", 0, ssl=server_context
-        )
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         client_context = ssl.create_default_context(cafile=str(cert))
         original_getaddrinfo = socket.getaddrinfo
