@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import ipaddress
 import os
@@ -70,6 +71,13 @@ def normalize_domain(raw: str) -> str:
     if not value or len(value) > 253 or "/" in value or ":" in value or "@" in value:
         raise ValueError("Ugyldigt domæne")
     try:
+        # This endpoint accepts hostnames, not IP-literal scan targets.
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("IP-adresser accepteres ikke; angiv et domænenavn")
+    try:
         value.encode("idna").decode("ascii")
     except UnicodeError as exc:
         raise ValueError("Ugyldigt domænenavn") from exc
@@ -81,19 +89,64 @@ def normalize_domain(raw: str) -> str:
     return value.encode("idna").decode("ascii")
 
 
+def _validate_public_ips(answers) -> list[str]:
+    ips = sorted({item[4][0].split("%", 1)[0] for item in answers})
+    if not ips:
+        raise RuntimeError("Ingen DNS-adresser")
+    for address in ips:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise RuntimeError("Domænet peger på en ikke-offentlig IP; scanning afvist")
+    return ips
+
+
 def resolve_public_ips(host: str) -> list[str]:
+    """Synchronous resolver retained for direct validation and compatibility tests."""
     try:
         answers = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise RuntimeError("DNS-opslag fejlede") from exc
-    ips = sorted({item[4][0].split("%", 1)[0] for item in answers})
-    if not ips:
-        raise RuntimeError("Ingen DNS-adresser")
-    for text in ips:
-        ip = ipaddress.ip_address(text)
-        if not ip.is_global:
-            raise RuntimeError("Domænet peger på en ikke-offentlig IP; scanning afvist")
-    return ips
+    return _validate_public_ips(answers)
+
+
+async def resolve_public_ips_async(host: str) -> list[str]:
+    """Resolve DNS without blocking the async request/event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+        answers = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise RuntimeError("DNS-opslag fejlede") from exc
+    return _validate_public_ips(answers)
+
+
+def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Return an IP-pinned URL while preserving the original HTTP host and TLS name."""
+    ip = ipaddress.ip_address(ip_text)
+    authority = f"[{ip}]" if ip.version == 6 else str(ip)
+    url = f"{scheme}://{authority}/"
+    # httpcore expects the SNI override as bytes (not str).
+    return url, {"Host": domain}, {"sni_hostname": domain.encode("ascii")}
+
+
+async def _read_response_body_limited(response: httpx.Response, max_bytes: int) -> tuple[int, bool]:
+    """Discard a response body while enforcing a decoded-byte processing limit.
+
+    The body is never retained. HTTPX yields bounded chunks, and iteration stops
+    as soon as the configured limit would be exceeded.
+    """
+    if max_bytes < 0:
+        raise ValueError("MAX_RESPONSE_BYTES must not be negative")
+
+    consumed = 0
+    truncated = False
+    async for chunk in response.aiter_bytes(chunk_size=8192):
+        remaining = max_bytes - consumed
+        if len(chunk) > remaining:
+            consumed += remaining
+            truncated = True
+            break
+        consumed += len(chunk)
+    return consumed, truncated
 
 
 async def probe(domain: str) -> dict:
@@ -101,30 +154,40 @@ async def probe(domain: str) -> dict:
     for scheme in ("https", "http"):
         url = f"{scheme}://{domain}/"
         try:
-            # Resolve and reject non-public destinations before issuing a request.
-            resolve_public_ips(domain)
+            # Resolve once, reject mixed/private answers, then pin TCP to an approved IP.
+            # The original hostname remains the HTTP Host and TLS verification name.
+            approved_ips = await resolve_public_ips_async(domain)
+            pinned_url, host_header, tls_extensions = _pinned_request_target(domain, approved_ips[0], scheme)
             async with httpx.AsyncClient(
                 timeout=TIMEOUT,
                 follow_redirects=False,
                 trust_env=False,
-                headers={"User-Agent": "DK-PHP-Exposure-Scanner/0.1 (+non-invasive security inventory)"},
+                headers={
+                    "User-Agent": "DK-PHP-Exposure-Scanner/0.1 (+non-invasive security inventory)",
+                    **host_header,
+                },
                 verify=True,
             ) as client:
-                async with client.stream("GET", url) as response:
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        body.extend(chunk)
-                        if len(body) >= MAX_BYTES:
-                            break
+                async with client.stream("GET", pinned_url, extensions=tls_extensions) as response:
                     server = response.headers.get("server", "")[:500]
                     powered = response.headers.get("x-powered-by", "")[:500]
-                    text = body.decode("utf-8", errors="ignore")
-                    combined = f"{server} {powered} {text[:MAX_BYTES]}"
-                    # Only capture explicit PHP version strings; do not infer a version from CMS names.
+                    # Only trust explicit version disclosure in X-Powered-By, never page content.
                     import re
-                    matches = re.findall(r"(?i)PHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)", combined)
+                    matches = re.findall(r"(?i)PHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)", powered)
                     version = matches[0] if matches else None
-                    indicator = bool(matches) or "php" in powered.lower() or "php" in server.lower()
+                    indicator = "php" in powered.lower() or "php" in server.lower()
+                    if response.status_code == 403:
+                        confidence = "blocked"
+                        status_note = "Serveren afviste forespørgslen (HTTP 403); PHP-fravær kan ikke konkluderes."
+                    elif response.status_code == 429:
+                        confidence = "rate-limited"
+                        status_note = "Serveren begrænsede forespørgslen (HTTP 429); PHP-fravær kan ikke konkluderes."
+                    else:
+                        confidence = "version-disclosed" if version else ("possible-php" if indicator else "unknown")
+                        status_note = ""
+                    _body_bytes, body_truncated = await _read_response_body_limited(response, MAX_BYTES)
+                    if body_truncated:
+                        status_note += (" " if status_note else "") + f"Response body blev afkortet ved {MAX_BYTES} bytes."
                     return {
                         "status_code": response.status_code,
                         "final_url": url,
@@ -132,15 +195,26 @@ async def probe(domain: str) -> dict:
                         "powered_by": powered,
                         "php_indicator": indicator,
                         "version_observed": version,
-                        "confidence": "version-disclosed" if version else ("possible-php" if indicator else "unknown"),
-                        "notes": "HTTP-redirects følges ikke; offentlig signaturkontrol, ikke en sårbarhedsbekræftelse.",
+                        "confidence": confidence,
+                        "notes": "HTTP-redirects følges ikke; offentlig signaturkontrol, ikke en sårbarhedsbekræftelse. " + status_note,
                     }
-        except Exception as exc:
-            errors.append(f"{scheme}: {str(exc)[:180]}")
+        except httpx.TimeoutException:
+            errors.append(f"{scheme}: timeout")
+        except httpx.ConnectError:
+            errors.append(f"{scheme}: connection-failed")
+        except httpx.TransportError:
+            errors.append(f"{scheme}: transport-failed")
+        except RuntimeError:
+            # DNS failures and rejected non-public destinations are reported
+            # without exposing resolver details or internal exception text.
+            errors.append(f"{scheme}: dns-or-destination-rejected")
+        except Exception:
+            # Keep unexpected implementation details out of persisted scan results.
+            errors.append(f"{scheme}: internal-error")
     return {
         "status_code": None, "final_url": None, "server_header": "", "powered_by": "",
         "php_indicator": False, "version_observed": None, "confidence": "unreachable",
-        "notes": "; ".join(errors)[:1000],
+        "notes": "Forespørgslen kunne ikke gennemføres: " + "; ".join(errors),
     }
 
 
@@ -219,18 +293,52 @@ def results(limit: int = 100, offset: int = 0):
              "confidence": r[8], "notes": r[9]} for r in rows]
 
 
+def _safe_csv_cell(value):
+    """Neutralize spreadsheet formulas in untrusted textual CSV cells."""
+    if not isinstance(value, str):
+        return value
+    if value.startswith(("\t", "\r", "\n")):
+        return "'" + value
+    stripped = value.lstrip(" ")
+    if stripped.startswith(("=", "+", "-", "@")):
+        prefix_length = len(value) - len(stripped)
+        return value[:prefix_length] + "'" + stripped
+    return value
+
+
 @app.get("/results.csv", dependencies=[Depends(require_api_key)])
 def results_csv():
+    import csv
+    import io
     from fastapi.responses import StreamingResponse
-    import csv, io
-    with db_connect() as conn:
-        rows = conn.execute("""
-            SELECT d.domain,s.scanned_at,s.status_code,s.server_header,s.powered_by,s.php_indicator,
-                   s.version_observed,s.confidence,s.notes
-            FROM scans s JOIN domains d ON d.id=s.domain_id ORDER BY s.scanned_at DESC
-        """).fetchall()
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["domain", "scanned_at", "status_code", "server_header", "x_powered_by", "php_indicator", "version_observed", "confidence", "notes"])
-    writer.writerows(rows)
-    return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=dk-php-scanner-results.csv"})
+
+    columns = [
+        "domain", "scanned_at", "status_code", "server_header", "x_powered_by",
+        "php_indicator", "version_observed", "confidence", "notes",
+    ]
+
+    def generate_csv():
+        # A named psycopg cursor keeps the result set on the PostgreSQL server;
+        # fetchmany bounds application memory while the response is streamed.
+        with db_connect() as conn:
+            with conn.cursor(name="scanner_csv_export") as cursor:
+                cursor.execute("""
+                    SELECT d.domain,s.scanned_at,s.status_code,s.server_header,s.powered_by,s.php_indicator,
+                           s.version_observed,s.confidence,s.notes
+                    FROM scans s JOIN domains d ON d.id=s.domain_id ORDER BY s.scanned_at DESC
+                """)
+                buffer = io.StringIO()
+                writer = csv.writer(buffer)
+                writer.writerow(columns)
+                yield buffer.getvalue()
+                while rows := cursor.fetchmany(500):
+                    buffer.seek(0)
+                    buffer.truncate(0)
+                    writer.writerows(tuple(_safe_csv_cell(value) for value in row) for row in rows)
+                    yield buffer.getvalue()
+
+    return StreamingResponse(
+        generate_csv(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=dk-php-scanner-results.csv"},
+    )
