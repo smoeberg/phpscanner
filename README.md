@@ -64,7 +64,6 @@ This is an MVP, not a production-ready national scanning platform.
 
 Not yet implemented:
 
-- Hardened DNS pinning and connection-level destination enforcement
 - Authoritative PHP/vendor advisory database
 - CVE and distribution-specific package assessment
 - Local read-only PHP runtime agent

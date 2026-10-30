@@ -725,3 +725,43 @@ def test_list_domains_exposes_verification_state_without_challenge_secrets(monke
         "verified_at": None,
         "verified": False,
     }]
+
+
+@pytest.mark.parametrize(
+    "addresses",
+    [
+        ["8.8.8.8", "127.0.0.1"],
+        ["2606:4700:4700::1111", "fd00::1"],
+        ["8.8.8.8", "::1"],
+    ],
+)
+def test_validate_public_ips_rejects_mixed_public_and_non_public_answers(addresses):
+    answers = [
+        (socket.AF_INET6 if ":" in address else socket.AF_INET,
+         socket.SOCK_STREAM, 6, "", (address, 0, 0, 0) if ":" in address else (address, 0))
+        for address in addresses
+    ]
+    with pytest.raises(RuntimeError, match="ikke-offentlig IP"):
+        main._validate_public_ips(answers)
+
+
+def test_validate_public_ips_deduplicates_and_accepts_public_ipv4_ipv6():
+    addresses = ["8.8.8.8", "8.8.8.8", "2606:4700:4700::1111"]
+    answers = [
+        (socket.AF_INET6 if ":" in address else socket.AF_INET,
+         socket.SOCK_STREAM, 6, "", (address, 0, 0, 0) if ":" in address else (address, 0))
+        for address in addresses
+    ]
+    assert main._validate_public_ips(answers) == sorted(set(addresses))
+
+
+def test_pinned_backend_rejects_unexpected_hostname():
+    import httpcore
+
+    backend = main._PinnedNetworkBackend("example.test", "8.8.8.8")
+
+    async def attempt():
+        with pytest.raises(httpcore.ConnectError, match="Unexpected destination host"):
+            await backend.connect_tcp(b"attacker.test", 443)
+
+    asyncio.run(attempt())
