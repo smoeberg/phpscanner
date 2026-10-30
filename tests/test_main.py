@@ -202,7 +202,10 @@ def test_probe_sends_request_to_pinned_ip_with_original_host_and_tls_name(monkey
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    async def fake_resolve_public_ips(_domain):
+        return ["8.8.8.8"]
+
+    monkeypatch.setattr(main, "resolve_public_ips_async", fake_resolve_public_ips)
     monkeypatch.setattr(main.httpx, "AsyncClient", client_with_mock_transport)
 
     result = asyncio.run(main.probe("example.com"))
@@ -225,7 +228,10 @@ def test_probe_ignores_php_version_mentioned_only_in_response_body(monkeypatch):
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    async def fake_resolve_public_ips(_domain):
+        return ["8.8.8.8"]
+
+    monkeypatch.setattr(main, "resolve_public_ips_async", fake_resolve_public_ips)
     monkeypatch.setattr(main.httpx, "AsyncClient", client_with_mock_transport)
     result = asyncio.run(main.probe("example.com"))
     assert result["version_observed"] is None
@@ -243,7 +249,10 @@ def test_probe_uses_x_powered_by_for_php_version(monkeypatch):
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    async def fake_resolve_public_ips(_domain):
+        return ["8.8.8.8"]
+
+    monkeypatch.setattr(main, "resolve_public_ips_async", fake_resolve_public_ips)
     monkeypatch.setattr(main.httpx, "AsyncClient", client_with_mock_transport)
     result = asyncio.run(main.probe("example.com"))
     assert result["version_observed"] == "8.3.4"
@@ -267,7 +276,10 @@ def test_probe_classifies_blocked_and_rate_limited_responses(monkeypatch, status
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    async def fake_resolve_public_ips(_domain):
+        return ["8.8.8.8"]
+
+    monkeypatch.setattr(main, "resolve_public_ips_async", fake_resolve_public_ips)
     monkeypatch.setattr(main.httpx, "AsyncClient", client_with_mock_transport)
     result = asyncio.run(main.probe("example.com"))
 
@@ -292,7 +304,10 @@ def test_probe_sanitizes_and_classifies_failures(monkeypatch, failure, expected_
     def fail_client(*args, **kwargs):
         raise failure
 
-    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    async def fake_resolve_public_ips(_domain):
+        return ["8.8.8.8"]
+
+    monkeypatch.setattr(main, "resolve_public_ips_async", fake_resolve_public_ips)
     monkeypatch.setattr(main.httpx, "AsyncClient", fail_client)
 
     result = asyncio.run(main.probe("example.com"))
