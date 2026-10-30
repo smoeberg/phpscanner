@@ -33,7 +33,7 @@ DNS answers are validated and the TCP connection is pinned to an approved public
 - Capacity slots and per-domain cooldown timestamps are stored in PostgreSQL, so the limits apply across API workers and replicas sharing the database.
 - Slots use a 90-second lease and are released after the probe; a crashed worker's slot becomes available after lease expiry.
 - A denied reservation returns HTTP 429. If PostgreSQL cannot enforce the reservation, the API fails closed with HTTP 503.
-- The lease is a crash-recovery bound, not a hard execution timeout. Keep scan execution below 90 seconds; review this value if probe timeouts or scan behavior change.
+- Each scan is wrapped in a strict 60-second end-to-end deadline, leaving a 30-second lease safety margin. Deadline expiry returns HTTP 504 and releases the slot in `finally`.
 
 ## Authentication
 
