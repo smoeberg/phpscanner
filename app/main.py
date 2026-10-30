@@ -125,13 +125,42 @@ async def resolve_public_ips_async(host: str) -> list[str]:
     return _validate_public_ips(answers)
 
 
-def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str, dict[str, str], dict[str, str]]:
-    """Return an IP-pinned URL while preserving the original HTTP host and TLS name."""
-    ip = ipaddress.ip_address(ip_text)
-    authority = f"[{ip}]" if ip.version == 6 else str(ip)
-    url = f"{scheme}://{authority}/"
-    # httpcore expects the SNI override as bytes (not str).
-    return url, {"Host": domain}, {"sni_hostname": domain.encode("ascii")}
+class _PinnedNetworkBackend:
+    """Connect to one approved IP while httpcore retains the URL hostname for TLS."""
+
+    def __init__(self, hostname: str, address: str):
+        from httpcore._backends.auto import AutoBackend
+
+        self.hostname = hostname.encode("idna").decode("ascii").lower().rstrip(".")
+        self.address = str(ipaddress.ip_address(address))
+        self._backend = AutoBackend()
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        requested = host.decode("ascii").lower().rstrip(".") if isinstance(host, bytes) else str(host).lower().rstrip(".")
+        if requested != self.hostname:
+            import httpcore
+            raise httpcore.ConnectError("Unexpected destination host")
+        return await self._backend.connect_tcp(
+            self.address, port, timeout=timeout,
+            local_address=local_address, socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        import httpcore
+        raise httpcore.ConnectError("Unix sockets are not permitted")
+
+    async def sleep(self, seconds):
+        return await self._backend.sleep(seconds)
+
+
+def _pinned_transport(domain: str, ip_text: str) -> httpx.AsyncHTTPTransport:
+    """Build a transport whose TCP backend cannot resolve or connect elsewhere."""
+    transport = httpx.AsyncHTTPTransport(verify=True, trust_env=False)
+    # httpx 0.28/httpcore 1.x exposes this backend seam on its connection pool.
+    # Keeping the URL hostname intact makes httpcore perform SNI and certificate
+    # hostname verification against the submitted domain, not the pinned IP.
+    transport._pool._network_backend = _PinnedNetworkBackend(domain, ip_text)
+    return transport
 
 
 async def _read_response_body_limited(response: httpx.Response, max_bytes: int) -> tuple[int, bool]:
@@ -163,18 +192,15 @@ async def probe(domain: str) -> dict:
             # Resolve once, reject mixed/private answers, then pin TCP to an approved IP.
             # The original hostname remains the HTTP Host and TLS verification name.
             approved_ips = await resolve_public_ips_async(domain)
-            pinned_url, host_header, tls_extensions = _pinned_request_target(domain, approved_ips[0], scheme)
+            transport = _pinned_transport(domain, approved_ips[0])
             async with httpx.AsyncClient(
                 timeout=TIMEOUT,
                 follow_redirects=False,
                 trust_env=False,
-                headers={
-                    "User-Agent": "DK-PHP-Exposure-Scanner/0.1 (+non-invasive security inventory)",
-                    **host_header,
-                },
-                verify=True,
+                headers={"User-Agent": "DK-PHP-Exposure-Scanner/0.1 (+non-invasive security inventory)"},
+                transport=transport,
             ) as client:
-                async with client.stream("GET", pinned_url, extensions=tls_extensions) as response:
+                async with client.stream("GET", f"{scheme}://{domain}/") as response:
                     server = response.headers.get("server", "")[:500]
                     powered = response.headers.get("x-powered-by", "")[:500]
                     # Only trust explicit version disclosure in X-Powered-By, never page content.
