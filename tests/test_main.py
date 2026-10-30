@@ -126,3 +126,19 @@ def test_resolve_public_ips_wraps_dns_errors(monkeypatch):
 
     with pytest.raises(RuntimeError, match="DNS-opslag fejlede"):
         resolve_public_ips("example.com")
+
+
+def test_pinned_request_target_uses_ip_but_preserves_hostname_for_http_and_tls():
+    url, headers, extensions = _pinned_request_target("example.com", "8.8.8.8", "https")
+
+    assert url == "https://8.8.8.8/"
+    assert headers == {"Host": "example.com"}
+    assert extensions == {"sni_hostname": "example.com"}
+
+
+def test_pinned_request_target_formats_ipv6_address():
+    url, headers, extensions = _pinned_request_target("example.com", "2606:4700:4700::1111", "http")
+
+    assert url == "http://[2606:4700:4700::1111]/"
+    assert headers["Host"] == "example.com"
+    assert extensions["sni_hostname"] == "example.com"
