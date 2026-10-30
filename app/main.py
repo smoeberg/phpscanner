@@ -20,6 +20,9 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 API_KEY = os.getenv("SCANNER_API_KEY", "")
 TIMEOUT = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
 MAX_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", "65536"))
+MAX_CONCURRENT_SCANS = 4
+SCAN_COOLDOWN_SECONDS = 60
+SCAN_SLOT_LEASE_SECONDS = 90
 app = FastAPI(title="DK PHP Exposure Scanner", version="0.1.0")
 
 def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
@@ -45,6 +48,22 @@ def startup():
         conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ")
         conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verification_token_hash TEXT")
         conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verification_expires_at TIMESTAMPTZ")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scan_rate_limits (
+                domain_id BIGINT PRIMARY KEY REFERENCES domains(id) ON DELETE CASCADE,
+                last_scan_started_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scan_slots (
+                slot_id INTEGER PRIMARY KEY,
+                lease_until TIMESTAMPTZ NOT NULL DEFAULT '-infinity'
+            )
+        """)
+        conn.execute(
+            "INSERT INTO scan_slots(slot_id) SELECT generate_series(1, %s) ON CONFLICT DO NOTHING",
+            (MAX_CONCURRENT_SCANS,),
+        )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scans (
                 id BIGSERIAL PRIMARY KEY,
@@ -356,6 +375,51 @@ def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
     return [{"id": r[0], "domain": r[1], "source": r[2], "created_at": r[3].isoformat(), "verified_at": r[4].isoformat() if r[4] else None, "verified": r[4] is not None} for r in rows]
 
 
+def reserve_scan_capacity(domain_id: int) -> int | None:
+    """Atomically reserve a global DB-backed slot and a per-domain cooldown."""
+    with db_connect() as conn:
+        slot = conn.execute(
+            """
+            WITH candidate AS (
+                SELECT slot_id FROM scan_slots
+                WHERE lease_until <= now()
+                ORDER BY slot_id
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            UPDATE scan_slots AS s
+            SET lease_until = now() + (%s * interval '1 second')
+            FROM candidate
+            WHERE s.slot_id = candidate.slot_id
+            RETURNING s.slot_id
+            """,
+            (SCAN_SLOT_LEASE_SECONDS,),
+        ).fetchone()
+        if not slot:
+            return None
+        slot_id = slot[0]
+        permitted = conn.execute(
+            """
+            INSERT INTO scan_rate_limits(domain_id, last_scan_started_at)
+            VALUES (%s, now())
+            ON CONFLICT (domain_id) DO UPDATE
+            SET last_scan_started_at = now()
+            WHERE scan_rate_limits.last_scan_started_at <= now() - (%s * interval '1 second')
+            RETURNING domain_id
+            """,
+            (domain_id, SCAN_COOLDOWN_SECONDS),
+        ).fetchone()
+        if not permitted:
+            conn.execute("UPDATE scan_slots SET lease_until = '-infinity' WHERE slot_id = %s", (slot_id,))
+            return None
+        return slot_id
+
+
+def release_scan_capacity(slot_id: int) -> None:
+    with db_connect() as conn:
+        conn.execute("UPDATE scan_slots SET lease_until = '-infinity' WHERE slot_id = %s", (slot_id,))
+
+
 @app.post("/domains/{domain_id}/scan", dependencies=[Depends(require_api_key)])
 async def scan_domain(domain_id: int):
     with db_connect() as conn:
@@ -364,7 +428,20 @@ async def scan_domain(domain_id: int):
         raise HTTPException(404, "Domæne ikke fundet")
     if row[2] is None:
         raise HTTPException(403, "Domænet skal verificeres før scanning")
-    result = await probe(row[1])
+    try:
+        slot_id = reserve_scan_capacity(row[0])
+    except Exception:
+        raise HTTPException(503, "Scan-kapacitet kunne ikke reserveres")
+    if slot_id is None:
+        raise HTTPException(429, "Scanning er midlertidigt begrænset; prøv igen senere")
+    try:
+        result = await probe(row[1])
+    finally:
+        try:
+            release_scan_capacity(slot_id)
+        except Exception:
+            # The lease expires automatically; never expose database details.
+            pass
     with db_connect() as conn:
         saved = conn.execute("""
             INSERT INTO scans(domain_id,status_code,final_url,server_header,powered_by,php_indicator,version_observed,confidence,notes)
