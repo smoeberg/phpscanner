@@ -155,7 +155,7 @@ class _PinnedNetworkBackend:
 
 def _pinned_transport(domain: str, ip_text: str) -> httpx.AsyncHTTPTransport:
     """Build a transport whose TCP backend cannot resolve or connect elsewhere."""
-    transport = httpx.AsyncHTTPTransport(verify=True, trust_env=False)
+    transport = httpx.AsyncHTTPTransport(verify=True)
     # httpx 0.28/httpcore 1.x exposes this backend seam on its connection pool.
     # Keeping the URL hostname intact makes httpcore perform SNI and certificate
     # hostname verification against the submitted domain, not the pinned IP.
