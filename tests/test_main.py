@@ -328,9 +328,12 @@ def test_safe_csv_cell_neutralizes_formula_prefixes(value):
     from app.main import _safe_csv_cell
 
     safe = _safe_csv_cell(value)
-    assert safe.endswith("'" + value.lstrip(" \t\r\n"))
+    if value.startswith(("\\t", "\\r", "\\n")):
+        # A leading control character is neutralized at the start of the cell.
+        assert safe == "'" + value
+    else:
+        assert safe.endswith("'" + value.lstrip(" "))
     assert safe != value
-
 
 @pytest.mark.parametrize("value", ["example.com", "PHP/8.3", "ordinary text", 0, 200, True, None])
 def test_safe_csv_cell_preserves_non_formula_values(value):
