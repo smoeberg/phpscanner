@@ -70,6 +70,13 @@ def normalize_domain(raw: str) -> str:
     if not value or len(value) > 253 or "/" in value or ":" in value or "@" in value:
         raise ValueError("Ugyldigt domæne")
     try:
+        # This endpoint accepts hostnames, not IP-literal scan targets.
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("IP-adresser accepteres ikke; angiv et domænenavn")
+    try:
         value.encode("idna").decode("ascii")
     except UnicodeError as exc:
         raise ValueError("Ugyldigt domænenavn") from exc
@@ -96,35 +103,42 @@ def resolve_public_ips(host: str) -> list[str]:
     return ips
 
 
+def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Return an IP-pinned URL while preserving the original HTTP host and TLS name."""
+    ip = ipaddress.ip_address(ip_text)
+    authority = f"[{ip}]" if ip.version == 6 else str(ip)
+    url = f"{scheme}://{authority}/"
+    # httpcore expects the SNI override as bytes (not str).
+    return url, {"Host": domain}, {"sni_hostname": domain.encode("ascii")}
+
+
 async def probe(domain: str) -> dict:
     errors: list[str] = []
     for scheme in ("https", "http"):
         url = f"{scheme}://{domain}/"
         try:
-            # Resolve and reject non-public destinations before issuing a request.
-            resolve_public_ips(domain)
+            # Resolve once, reject mixed/private answers, then pin TCP to an approved IP.
+            # The original hostname remains the HTTP Host and TLS verification name.
+            approved_ips = resolve_public_ips(domain)
+            pinned_url, host_header, tls_extensions = _pinned_request_target(domain, approved_ips[0], scheme)
             async with httpx.AsyncClient(
                 timeout=TIMEOUT,
                 follow_redirects=False,
                 trust_env=False,
-                headers={"User-Agent": "DK-PHP-Exposure-Scanner/0.1 (+non-invasive security inventory)"},
+                headers={
+                    "User-Agent": "DK-PHP-Exposure-Scanner/0.1 (+non-invasive security inventory)",
+                    **host_header,
+                },
                 verify=True,
             ) as client:
-                async with client.stream("GET", url) as response:
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        body.extend(chunk)
-                        if len(body) >= MAX_BYTES:
-                            break
+                async with client.stream("GET", pinned_url, extensions=tls_extensions) as response:
                     server = response.headers.get("server", "")[:500]
                     powered = response.headers.get("x-powered-by", "")[:500]
-                    text = body.decode("utf-8", errors="ignore")
-                    combined = f"{server} {powered} {text[:MAX_BYTES]}"
-                    # Only capture explicit PHP version strings; do not infer a version from CMS names.
+                    # Only trust explicit version disclosure in X-Powered-By, never page content.
                     import re
-                    matches = re.findall(r"(?i)PHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)", combined)
+                    matches = re.findall(r"(?i)PHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)", powered)
                     version = matches[0] if matches else None
-                    indicator = bool(matches) or "php" in powered.lower() or "php" in server.lower()
+                    indicator = "php" in powered.lower() or "php" in server.lower()
                     return {
                         "status_code": response.status_code,
                         "final_url": url,
