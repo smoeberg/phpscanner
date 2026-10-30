@@ -767,6 +767,9 @@ def test_pinned_backend_rejects_unexpected_hostname():
     asyncio.run(attempt())
 
 
+from datetime import datetime, timezone
+
+
 @pytest.mark.parametrize("reservation", [None])
 def test_scan_returns_rate_limit_when_capacity_or_cooldown_denies(monkeypatch, reservation):
     class FakeConnection:
