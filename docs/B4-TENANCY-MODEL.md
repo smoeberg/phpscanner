@@ -1,120 +1,120 @@
-# B4 — Tenancy- og adgangsmodel
+# B4 — Intern intern adgangs- og prospectmodel
 
-Status: designforslag. Ingen database- eller produktionsændringer.
+Status: revideret designforslag. Dokumentation בלבד; ingen database-, API- eller produktionsændringer.
 
-## 1. Kanonisk model
+## 1. Formål og produktgrænse
 
-`organization → customer → site → runtime → pool`
+PHP Exposure Scanner er et **internt arbejdsredskab for Inmente**. Det bruges af Inmentes autoriserede medarbejdere til at undersøge websites, identificere mulige PHP-sikkerheds- og vedligeholdelsesproblemer og kvalificere potentielle kunder.
 
-Relationen er ikke et simpelt træ:
-- En organisation repræsenterer fx et bureau.
-- En customer er kundens forretningsmæssige konto under organisationen.
-- Et site er kundens stabile website-identitet, uafhængig af domæne og hosting.
-- En runtime er et PHP-eksekveringsmiljø.
-- En pool er en PHP-FPM-pool eller tilsvarende eksekveringsgruppe.
-- Et site kan have flere domæner og flere samtidige runtime-/pool-bindinger. En pool kan betjene flere sites.
+Systemet er ikke et SaaS-produkt og har ingen ekstern kunde-, bureau- eller selvbetjeningsportal.
 
-## 2. Kernetabeller
+Eksterne virksomheder, webbureauer, websites og domæner er research-/prospectdata. De er ikke brugerkonti og får ikke login til scanneren.
 
-### organization
-`id UUID PK, name, status, created_at, updated_at`
+## 2. Kanonisk arbejdsmodel
 
-### customer
-`id UUID PK, organization_id FK, name, external_reference nullable, status, created_at, updated_at`
+`Inmente → interne brugere → prospects → websites/domæner → scanninger → observationer/fund → lead-opfølgning`
 
-En kunde tilhører én organisation i første version. Ekstern bureauadgang gives via grants, ikke ved at kopiere kunden.
+- **Inmente** er den interne ejer og eneste organisation, der bruger systemet.
+- **Intern bruger** er en medarbejder eller anden udtrykkeligt autoriseret person hos Inmente.
+- **Prospect** er en virksomhed eller organisation, som Inmente undersøger som mulig kunde.
+- **Website** er et identificerbart websted, der kan have flere domæner/hostnames.
+- **Scanning** er en teknisk undersøgelse med tidspunkt, metode og resultat.
+- **Observation/fund** er tekniske data fra scanningen. Et fund er ikke automatisk bevis for en sårbarhed.
+- **Lead-opfølgning** registrerer intern vurdering, kontaktforsøg, status og næste handling.
 
-### site
-`id UUID PK, customer_id FK, display_name, status, created_at, updated_at, deleted_at nullable`
+Et webbureau kan være et prospect på samme måde som en anden virksomhed. Det får ikke en organisation i systemets adgangshierarki og får ikke delegeret adgang.
 
-Site-ID er stabilt. Domæne- eller hostingændringer må ikke skabe en ny identitet eller flytte historikken til et andet site.
+## 3. Foreslåede kernedata
 
-### site_domain
-`id UUID PK, site_id FK, hostname, verification_status, verified_at, created_at`
+### internal_user
+`id UUID PK, identity_subject, display_name, email, role, status, created_at, last_seen_at nullable`
 
-Et site kan have flere domæner. Aktivering kræver DNS TXT- eller HTTPS `/.well-known/`-challenge. Unik aktiv hostname-binding håndhæves transaktionelt.
+Kun interne, inviterede/autoriserede brugere. Identitet bør kobles til Inmentes valgte login-/SSO-løsning. Ingen offentlig registrering.
 
-### site_key
-`id UUID PK, site_id FK, key_id, secret_hash/public_key, created_at, expires_at, revoked_at, last_used_at nullable`
+Roller i første version holdes enkle:
+- `admin`: brugeradministration og systemkonfiguration.
+- `analyst`: prospects, scanninger, vurderinger og opfølgning.
+- `viewer`: læseadgang til interne rapporter.
 
-Rå hemmeligheder må ikke kunne læses fra databasen. Nøgler skal kunne roteres og tilbagekaldes. Site-binding og agentidentitet er separate forhold.
+### prospect
+`id UUID PK, legal_name, organization_number nullable, website_url nullable, prospect_type, status, source, notes, created_at, updated_at`
 
-### runtime
-`id UUID PK, runtime_kind, host_fingerprint nullable, php_binary nullable, package_identity nullable, first_seen_at, last_seen_at, status`
+`prospect_type` kan fx være virksomhed, webbureau eller anden organisation. Status og kontaktdata er interne salgsoplysninger. Indsaml kun nødvendige oplysninger.
 
-Runtime er et miljøobjekt, ikke en antagelse om at alle sites på samme host bruger samme PHP-version.
+### prospect_domain
+`id UUID PK, prospect_id FK, hostname, relationship_type, verification_status, first_seen_at, last_seen_at, notes`
 
-### pool
-`id UUID PK, runtime_id FK, pool_identifier, created_at, retired_at nullable`
+Et prospect kan have flere websites/domæner. Et domæne kan ikke uden videre antages at tilhøre en virksomhed alene på baggrund af DNS eller teknisk hosting. Ejerskab/tilknytning skal kunne stå som ukendt eller ubekræftet.
 
-### site_runtime_binding
-`id UUID PK, site_id FK, runtime_id FK, pool_id FK nullable, valid_from, valid_until nullable, linkage_status, evidence_ref nullable`
+### scan_target
+`id UUID PK, prospect_domain_id FK nullable, hostname, authorization_basis, status, created_at`
 
-Bindinger er tidsafgrænsede. Flere samtidige bindings er tilladt ved load balancing. Historik lukkes med `valid_until` og overskrives ikke.
+Mål og grundlag for, at Inmente må foretage den pågældende undersøgelse, skal kunne dokumenteres. Scanning må ikke automatisk starte alene fordi et domæne er fundet i research.
 
-### access_grant
-`id UUID PK, organization_id FK, customer_id FK nullable, site_id FK nullable, grantee_type, grantee_id, role, valid_from, valid_until nullable, revoked_at nullable, granted_by, created_at`
+### scan
+Eksisterende scan-historik bevares. Nye scanninger skal knyttes til scan_target/prospect_domain, når koblingen er kendt. Gem metode, start/slut, scanner-version, status og teknisk evidens.
 
-Hvert grant skal have præcis ét scope: organisation, kunde eller site. Roller: `owner`, `admin`, `operator`, `viewer`.
+### finding / observation
+Tekniske observationer holdes adskilt fra vurderinger og salgsstatus. En HTTP-observation må ikke fremstilles som bekræftet sårbarhed uden tilstrækkelig evidens. `undetermined` skal være en gyldig konklusion.
+
+### lead_activity
+`id UUID PK, prospect_id FK, actor_user_id FK, activity_type, occurred_at, summary, next_action nullable, next_action_at nullable`
+
+Registrerer intern kvalificering, kontaktforsøg, møder, afvisninger og opfølgning. Undgå at gemme unødvendige personoplysninger eller følsomt indhold.
 
 ### audit_event
-`id UUID PK, actor_type, actor_id, action, target_type, target_id, occurred_at, metadata JSONB`
+`id UUID PK, actor_user_id FK, action, target_type, target_id, occurred_at, metadata JSONB`
 
-Metadata må ikke indeholde credentials eller hemmeligheder. Auditér grants, domain proof, nøglelivscyklus, ændringer og rapporteksport.
+Auditér login-/rolleændringer, scanninger, eksport, ændringer af autorisationsgrundlag og ændringer i lead-status. Metadata må ikke indeholde credentials eller hemmeligheder.
 
-## 3. Adgangsregler
+## 4. Adgangsregler
 
-1. Kunden ejer sit site. Bureauets adgang er delegeret og kan tilbagekaldes.
-2. En organisation ser kun egne kunder/sites og sites med en eksplicit aktiv grant.
-3. En kunde ser kun egne sites og kan administrere delegeret bureauadgang efter den valgte bruger-/rollemodel.
-4. `owner` administrerer site og grants; `admin` konfiguration; `operator` scanninger; `viewer` rapporter.
-5. Alle checks håndhæves server-side. Klientleverede ID'er er aldrig autorisation.
-6. Servicekonti og agentnøgler har eksplicit, begrænset scope.
-7. Rapport-, eksport- og baggrundsjob bruger samme adgangspolitik som almindelige API-læsninger.
-8. Tilbagekaldelse og udløb blokerer straks nye handlinger.
+1. Kun Inmentes autoriserede interne brugere kan logge ind.
+2. Ingen kunde-, prospect- eller bureau-login.
+3. Ingen invitationsflow for eksterne brugere og ingen delegerede eksterne grants.
+4. Alle adgangskontroller håndhæves server-side efter intern rolle.
+5. Eksport, rapporter og baggrundsjob følger samme interne adgangspolitik.
+6. Scanninger kræver dokumenteret og passende autorisationsgrundlag; intern adgang er ikke i sig selv tilladelse til at scanne et tredjeparts website.
+7. Logning må ikke eksponere API-nøgler, tokens eller andre hemmeligheder.
 
-## 4. Historik og datalivscyklus
+## 5. Historik og datalivscyklus
 
-- Observationer, vurderinger og rapporter knyttes til stabilt site-ID.
-- Domæneændring opdaterer site_domain, ikke site-identiteten.
-- Bureauændring opdaterer grants, ikke ejerskab eller historik.
-- Runtime-/poolrelationer gemmes med gyldighedsperioder og evidens.
-- Ukendt site-runtime-kæde forbliver `undetermined`.
-- Sletning følger B3's vedtagne opbevaringsregler; denne model fastlægger ikke retention.
-- Historiske objekter slettes ikke ved cascade som standard. Brug kontrolleret lifecycle og auditspor.
-
-## 5. Integritet og indekser
-
-- Foreign keys på alle relationer; `ON DELETE RESTRICT` som standard for historiske objekter.
-- Indeks på customer.organization_id, site.customer_id, site_domain.hostname, site_runtime_binding.site_id/runtime_id og access_grant principal/scope.
+- Eksisterende `domains` og `scans` skal bevares; ingen destruktiv migration som del af designarbejdet.
+- Historiske scanninger må ikke få en prospect-tilknytning gættet. Ukendt relation forbliver ukendt, indtil den er verificeret.
+- Observationer, tekniske vurderinger og lead-status er separate begreber.
+- Prospect- og kontaktdata skal have formål, adgangsbegrænsning og slette-/retentionsregler.
+- B3's databeskyttelsesbeslutninger skal afklares før behandling af personoplysninger i pilot. Dette dokument fastsætter ikke endelig retention eller juridisk rollefordeling.
 - Alle tider gemmes UTC.
-- UUID er identifikator, ikke adgangstoken.
-- Constraints skal forhindre ugyldige grants og dublerede aktive domænebindings.
 
 ## 6. Ikke omfattet
 
-Ingen SQL-migration, API-ændring, login-/invitation-flow eller ændring af eksisterende domains/scans. Ingen ændringer på Athos. Dette er alene design.
+- Kundeportal, kundelogin eller bureau-login.
+- Ekstern selvbetjening, invitationer eller delegeret adgang.
+- Kommerciel multi-tenant SaaS-arkitektur.
+- SQL-migration, API-ændring eller applikationskode.
+- Ændringer på Athos eller automatisk scanning af uopfordrede tredjepartsdomæner.
+
+Dette PR er alene et revideret designforslag.
 
 ## 7. Implementeringsrækkefølge
 
-1. Godkend begreber, ejerskab og adgangsregler.
-2. Fastlæg bruger- og serviceprincipal-modellen.
-3. Skriv PostgreSQL-migrationer og constraints.
-4. Implementér central authorization service og negative tests.
-5. Migrér domains til site/site_domain med eksplicit mapping; bevar scan-historik.
-6. Eksponér først derefter tenancy i API/UI.
+1. Godkend Inmente som eneste interne brugerorganisation og fastlæg interne roller.
+2. Afklar login/SSO og brugeradministration for Inmentes medarbejdere.
+3. Fastlæg prospect-statusser, lead-workflow og nødvendige kontaktfelter.
+4. Fastlæg dokumentation af autorisationsgrundlag før scanning.
+5. Design migrationsmapping fra eksisterende `domains` og `scans`, uden at gætte ejerskab.
+6. Implementér interne adgangskontroller og negative tests.
+7. Tilføj prospect- og lead-funktioner i UI/API efter separat godkendelse.
 
 ## 8. Acceptkriterier for B4
 
-- Kunde kan eje flere sites.
-- Site kan have flere domæner og flere samtidige runtime-/poolbindings.
-- Runtimehistorik kan bevares.
-- Bureau kan kun se sites med aktiv grant.
-- Tilbagekaldt/udløbet grant blokerer også rapport og eksport.
-- Kundens skift af bureau bevarer site-ID og historik.
-- Site-ID alene giver aldrig adgang.
-- Negative tests dækker cross-organization, cross-customer, revoked grant, expired grant og service-token scope.
-
-## Åbent pilotvalg
-
-Skal kunden have egen login-/brugeridentitet fra første pilot, eller administreres adgang i piloten alene gennem bureauet? Modellen understøtter begge dele, men invitationsflow og brugeroplevelse afhænger af beslutningen.
+- Kun autoriserede Inmente-brugere kan logge ind.
+- Interne roller håndhæves server-side.
+- Ingen eksterne brugeridentiteter eller kunde-/bureau-login findes i modellen.
+- Prospects kan have flere domæner/websites.
+- Domæne-/virksomhedstilknytning kan være ubekræftet.
+- Scanninger har dokumenteret autorisationsgrundlag.
+- Historiske scanninger bevares og tilknyttes ikke prospects ved gæt.
+- Tekniske fund og lead-status er adskilte.
+- Lead-opfølgning kan spores til intern bruger og tidspunkt.
+- Audit dækker adgang, scanning og eksport.
