@@ -215,3 +215,31 @@ def test_probe_uses_x_powered_by_for_php_version(monkeypatch):
     result = asyncio.run(main.probe("example.com"))
     assert result["version_observed"] == "8.3.4"
     assert result["php_indicator"] is True
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_confidence", "note"),
+    [
+        (403, "blocked", "HTTP 403"),
+        (429, "rate-limited", "HTTP 429"),
+    ],
+)
+def test_probe_classifies_blocked_and_rate_limited_responses(monkeypatch, status_code, expected_confidence, note):
+    async def handler(_request):
+        return httpx.Response(status_code, headers={"server": "nginx"})
+
+    real_async_client = httpx.AsyncClient
+
+    def client_with_mock_transport(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    monkeypatch.setattr(main.httpx, "AsyncClient", client_with_mock_transport)
+    result = asyncio.run(main.probe("example.com"))
+
+    assert result["status_code"] == status_code
+    assert result["confidence"] == expected_confidence
+    assert note in result["notes"]
+    assert result["php_indicator"] is False
+    assert result["version_observed"] is None
