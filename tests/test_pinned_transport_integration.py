@@ -46,8 +46,11 @@ def test_pinned_transport_uses_real_peer_and_tls_hostname(
         server_context.set_servername_callback(capture_sni)
 
         async def handle(reader, writer):
+            # Capture the TCP peer before TLS negotiation: a client that rejects
+            # the certificate will close before any HTTP request is delivered.
             observed["peer"] = writer.get_extra_info("peername")[0]
             try:
+                await writer.start_tls(server_context)
                 request = await reader.readuntil(b"\r\n\r\n")
                 for line in request.decode("latin-1").split("\r\n"):
                     if line.lower().startswith("host:"):
