@@ -153,6 +153,13 @@ class _PinnedNetworkBackend:
         return await self._backend.sleep(seconds)
 
 
+def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Legacy URL formatter retained for compatibility tests; probe does not use it."""
+    ip = ipaddress.ip_address(ip_text)
+    authority = f"[{ip}]" if ip.version == 6 else str(ip)
+    return f"{scheme}://{authority}/", {"Host": domain}, {"sni_hostname": domain.encode("ascii")}
+
+
 def _pinned_transport(domain: str, ip_text: str) -> httpx.AsyncHTTPTransport:
     """Build a transport whose TCP backend cannot resolve or connect elsewhere."""
     transport = httpx.AsyncHTTPTransport(verify=True)
