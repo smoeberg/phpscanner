@@ -243,3 +243,32 @@ def test_probe_classifies_blocked_and_rate_limited_responses(monkeypatch, status
     assert note in result["notes"]
     assert result["php_indicator"] is False
     assert result["version_observed"] is None
+
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_note"),
+    [
+        (httpx.ReadTimeout("secret-hostname.internal"), "timeout"),
+        (httpx.ConnectError("private-address=10.0.0.7"), "connection-failed"),
+        (RuntimeError("resolver detail: private-address=10.0.0.7"), "dns-or-destination-rejected"),
+        (ValueError("secret implementation detail"), "internal-error"),
+    ],
+)
+def test_probe_sanitizes_and_classifies_failures(monkeypatch, failure, expected_note):
+    def fail_client(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    monkeypatch.setattr(main.httpx, "AsyncClient", fail_client)
+
+    result = asyncio.run(main.probe("example.com"))
+
+    assert result["confidence"] == "unreachable"
+    assert expected_note in result["notes"]
+    assert "secret-hostname.internal" not in result["notes"]
+    assert "10.0.0.7" not in result["notes"]
+    assert "secret implementation detail" not in result["notes"]
+    assert result["status_code"] is None
+    assert result["php_indicator"] is False
+    assert result["version_observed"] is None
