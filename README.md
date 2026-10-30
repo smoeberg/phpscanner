@@ -24,8 +24,16 @@ whether a server is vulnerable.
 - PHP/version observations are indicators, not proof of vulnerability.
 - Does not modify Apache, firewalls, existing containers or databases.
 
-DNS rebinding protection and connection pinning require further hardening.
-Current DNS validation is not a complete egress security boundary.
+DNS answers are validated and the TCP connection is pinned to an approved public IP. This remains defense in depth, not a complete egress security boundary.
+
+## Scan rate limits
+
+- At most 4 scans may hold a global database-backed capacity slot at once.
+- A domain can start at most one scan every 60 seconds.
+- Capacity slots and per-domain cooldown timestamps are stored in PostgreSQL, so the limits apply across API workers and replicas sharing the database.
+- Slots use a 90-second lease and are released after the probe; a crashed worker's slot becomes available after lease expiry.
+- A denied reservation returns HTTP 429. If PostgreSQL cannot enforce the reservation, the API fails closed with HTTP 503.
+- The lease is a crash-recovery bound, not a hard execution timeout. Keep scan execution below 90 seconds; review this value if probe timeouts or scan behavior change.
 
 ## Authentication
 
@@ -68,7 +76,6 @@ Not yet implemented:
 - CVE and distribution-specific package assessment
 - Local read-only PHP runtime agent
 - Background job queue and scheduling
-- Global rate limiting and retry policy
 - Comprehensive automated security and integration tests
 - Full audit and authorization model for multiple users
 
