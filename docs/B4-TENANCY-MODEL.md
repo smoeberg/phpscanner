@@ -1,6 +1,6 @@
 # B4 — Intern intern adgangs- og prospectmodel
 
-Status: revideret designforslag. Dokumentation בלבד; ingen database-, API- eller produktionsændringer.
+Status: revideret designforslag. Dokumentation alene; ingen database-, API- eller produktionsændringer.
 
 ## 1. Formål og produktgrænse
 
