@@ -132,20 +132,13 @@ async def probe(domain: str) -> dict:
                 verify=True,
             ) as client:
                 async with client.stream("GET", pinned_url, extensions=tls_extensions) as response:
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        body.extend(chunk)
-                        if len(body) >= MAX_BYTES:
-                            break
                     server = response.headers.get("server", "")[:500]
                     powered = response.headers.get("x-powered-by", "")[:500]
-                    text = body.decode("utf-8", errors="ignore")
-                    combined = f"{server} {powered} {text[:MAX_BYTES]}"
-                    # Only capture explicit PHP version strings; do not infer a version from CMS names.
+                    # Only trust explicit version disclosure in X-Powered-By, never page content.
                     import re
-                    matches = re.findall(r"(?i)PHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)", combined)
+                    matches = re.findall(r"(?i)PHP\\s*/?\\s*(\\d+\\.\\d+(?:\\.\\d+)?)", powered)
                     version = matches[0] if matches else None
-                    indicator = bool(matches) or "php" in powered.lower() or "php" in server.lower()
+                    indicator = "php" in powered.lower() or "php" in server.lower()
                     return {
                         "status_code": response.status_code,
                         "final_url": url,
