@@ -103,21 +103,34 @@ def resolve_public_ips(host: str) -> list[str]:
     return ips
 
 
+def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Return an IP-pinned URL while preserving the original HTTP host and TLS name."""
+    ip = ipaddress.ip_address(ip_text)
+    authority = f"[{ip}]" if ip.version == 6 else str(ip)
+    url = f"{scheme}://{authority}/"
+    return url, {"Host": domain}, {"sni_hostname": domain}
+
+
 async def probe(domain: str) -> dict:
     errors: list[str] = []
     for scheme in ("https", "http"):
         url = f"{scheme}://{domain}/"
         try:
-            # Resolve and reject non-public destinations before issuing a request.
-            resolve_public_ips(domain)
+            # Resolve once, reject mixed/private answers, then pin TCP to an approved IP.
+            # The original hostname remains the HTTP Host and TLS verification name.
+            approved_ips = resolve_public_ips(domain)
+            pinned_url, host_header, tls_extensions = _pinned_request_target(domain, approved_ips[0], scheme)
             async with httpx.AsyncClient(
                 timeout=TIMEOUT,
                 follow_redirects=False,
                 trust_env=False,
-                headers={"User-Agent": "DK-PHP-Exposure-Scanner/0.1 (+non-invasive security inventory)"},
+                headers={
+                    "User-Agent": "DK-PHP-Exposure-Scanner/0.1 (+non-invasive security inventory)",
+                    **host_header,
+                },
                 verify=True,
             ) as client:
-                async with client.stream("GET", url) as response:
+                async with client.stream("GET", pinned_url, extensions=tls_extensions) as response:
                     body = bytearray()
                     async for chunk in response.aiter_bytes():
                         body.extend(chunk)
