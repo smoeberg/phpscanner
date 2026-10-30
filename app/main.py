@@ -139,6 +139,15 @@ async def probe(domain: str) -> dict:
                     matches = re.findall(r"(?i)PHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)", powered)
                     version = matches[0] if matches else None
                     indicator = "php" in powered.lower() or "php" in server.lower()
+                    if response.status_code == 403:
+                        confidence = "blocked"
+                        status_note = "Serveren afviste forespørgslen (HTTP 403); PHP-fravær kan ikke konkluderes."
+                    elif response.status_code == 429:
+                        confidence = "rate-limited"
+                        status_note = "Serveren begrænsede forespørgslen (HTTP 429); PHP-fravær kan ikke konkluderes."
+                    else:
+                        confidence = "version-disclosed" if version else ("possible-php" if indicator else "unknown")
+                        status_note = ""
                     return {
                         "status_code": response.status_code,
                         "final_url": url,
@@ -146,8 +155,8 @@ async def probe(domain: str) -> dict:
                         "powered_by": powered,
                         "php_indicator": indicator,
                         "version_observed": version,
-                        "confidence": "version-disclosed" if version else ("possible-php" if indicator else "unknown"),
-                        "notes": "HTTP-redirects følges ikke; offentlig signaturkontrol, ikke en sårbarhedsbekræftelse.",
+                        "confidence": confidence,
+                        "notes": "HTTP-redirects følges ikke; offentlig signaturkontrol, ikke en sårbarhedsbekræftelse. " + status_note,
                     }
         except Exception as exc:
             errors.append(f"{scheme}: {str(exc)[:180]}")
