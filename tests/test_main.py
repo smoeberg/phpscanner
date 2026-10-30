@@ -365,7 +365,11 @@ def test_results_csv_streams_bounded_batches_without_fetchall(monkeypatch):
     monkeypatch.setattr(main, "db_connect", lambda: connection)
 
     response = main.results_csv()
-    chunks = list(response.body_iterator)
+
+    async def collect_chunks():
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(collect_chunks())
     csv_text = "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks)
 
     assert csv_text.startswith("domain,scanned_at,status_code")
