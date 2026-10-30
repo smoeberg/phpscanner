@@ -320,3 +320,55 @@ def test_probe_sanitizes_and_classifies_failures(monkeypatch, failure, expected_
     assert result["status_code"] is None
     assert result["php_indicator"] is False
     assert result["version_observed"] is None
+
+
+def test_results_csv_streams_bounded_batches_without_fetchall(monkeypatch):
+    class FakeCursor:
+        def __init__(self):
+            self.batches = [
+                [("example.com", "2026-10-30T12:00:00+00:00", 200, "nginx", "PHP/8.3", True, "8.3", "version-disclosed", "ok")],
+                [],
+            ]
+            self.fetch_sizes = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _query):
+            pass
+
+        def fetchmany(self, size):
+            self.fetch_sizes.append(size)
+            return self.batches.pop(0)
+
+        def fetchall(self):
+            raise AssertionError("CSV export must not call fetchall")
+
+    class FakeConnection:
+        def __init__(self):
+            self.fake_cursor = FakeCursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self, name=None):
+            assert name == "scanner_csv_export"
+            return self.fake_cursor
+
+    connection = FakeConnection()
+    monkeypatch.setattr(main, "db_connect", lambda: connection)
+
+    response = main.results_csv()
+    chunks = list(response.body_iterator)
+    csv_text = "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks)
+
+    assert csv_text.startswith("domain,scanned_at,status_code")
+    assert "example.com" in csv_text
+    assert "PHP/8.3" in csv_text
+    assert connection.fake_cursor.fetch_sizes == [500, 500]
