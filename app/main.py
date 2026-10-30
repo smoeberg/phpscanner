@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import hashlib
 import ipaddress
 import os
+import secrets
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
+import dns.asyncresolver
 import httpx
 import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -39,6 +42,9 @@ def startup():
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
+        conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ")
+        conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verification_token_hash TEXT")
+        conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verification_expires_at TIMESTAMPTZ")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scans (
                 id BIGSERIAL PRIMARY KEY,
@@ -243,6 +249,58 @@ def import_domains(payload: DomainImport):
     return {"processed": len(payload.domains), "accepted_or_existing": accepted, "rejected": rejected}
 
 
+@app.post("/domains/{domain_id}/verification-challenge", dependencies=[Depends(require_api_key)])
+def create_domain_verification_challenge(domain_id: int):
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+    with db_connect() as conn:
+        row = conn.execute("SELECT domain FROM domains WHERE id=%s", (domain_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Domæne ikke fundet")
+        conn.execute(
+            "UPDATE domains SET verified_at=NULL, verification_token_hash=%s, verification_expires_at=%s WHERE id=%s",
+            (token_hash, expires_at, domain_id),
+        )
+    return {"domain": row[0], "record_name": f"_dk-php-scanner-verification.{row[0]}",
+            "record_type": "TXT", "record_value": f"dk-php-scanner-verification={token}",
+            "expires_at": expires_at.isoformat()}
+
+
+@app.post("/domains/{domain_id}/verify", dependencies=[Depends(require_api_key)])
+async def verify_domain_control(domain_id: int):
+    with db_connect() as conn:
+        row = conn.execute("SELECT domain, verification_token_hash, verification_expires_at FROM domains WHERE id=%s", (domain_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Domæne ikke fundet")
+    domain, token_hash, expires_at = row
+    now = datetime.now(timezone.utc)
+    if not token_hash or not expires_at or expires_at <= now:
+        raise HTTPException(400, "Verifikationschallenge mangler eller er udløbet")
+    try:
+        answers = await dns.asyncresolver.resolve(f"_dk-php-scanner-verification.{domain}", "TXT", lifetime=5)
+        valid = False
+        for answer in answers:
+            value = b"".join(answer.strings).decode("utf-8", errors="strict")
+            prefix = "dk-php-scanner-verification="
+            if value.startswith(prefix):
+                supplied_hash = hashlib.sha256(value[len(prefix):].encode("utf-8")).hexdigest()
+                if hmac.compare_digest(supplied_hash, token_hash):
+                    valid = True
+                    break
+    except Exception:
+        valid = False
+    if not valid:
+        raise HTTPException(400, "DNS TXT-verifikation kunne ikke bekræftes")
+    with db_connect() as conn:
+        updated = conn.execute(
+            "UPDATE domains SET verified_at=%s, verification_token_hash=NULL, verification_expires_at=NULL WHERE id=%s AND verification_token_hash=%s AND verification_expires_at>%s RETURNING domain",
+            (now, domain_id, token_hash, now),
+        ).fetchone()
+    if not updated:
+        raise HTTPException(409, "Challenge er udløbet eller allerede anvendt")
+    return {"domain": updated[0], "verified": True, "verified_at": now.isoformat()}
+
 @app.get("/domains", dependencies=[Depends(require_api_key)])
 def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
     if not 1 <= limit <= 1000 or offset < 0:
@@ -264,9 +322,11 @@ def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
 @app.post("/domains/{domain_id}/scan", dependencies=[Depends(require_api_key)])
 async def scan_domain(domain_id: int):
     with db_connect() as conn:
-        row = conn.execute("SELECT id, domain FROM domains WHERE id=%s", (domain_id,)).fetchone()
+        row = conn.execute("SELECT id, domain, verified_at FROM domains WHERE id=%s", (domain_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Domæne ikke fundet")
+    if row[2] is None:
+        raise HTTPException(403, "Domænet skal verificeres før scanning")
     result = await probe(row[1])
     with db_connect() as conn:
         saved = conn.execute("""
