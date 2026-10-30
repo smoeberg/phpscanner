@@ -13,6 +13,7 @@ from app.main import (
     _pinned_request_target,
     app,
     normalize_domain,
+    _read_response_body_limited,
     require_api_key,
     resolve_public_ips,
 )
@@ -376,3 +377,47 @@ def test_results_csv_streams_bounded_batches_without_fetchall(monkeypatch):
     assert "example.com" in csv_text
     assert "PHP/8.3" in csv_text
     assert connection.fake_cursor.fetch_sizes == [500, 500]
+
+
+
+def test_response_body_limit_stops_at_configured_byte_count():
+    class FakeResponse:
+        def __init__(self):
+            self.yielded = 0
+
+        async def aiter_bytes(self, chunk_size):
+            assert chunk_size == 8192
+            self.yielded += 1
+            yield b"1234"
+            self.yielded += 1
+            yield b"5678"
+            self.yielded += 1
+            yield b"ignored"
+
+    response = FakeResponse()
+    consumed, truncated = asyncio.run(_read_response_body_limited(response, 5))
+
+    assert consumed == 5
+    assert truncated is True
+    assert response.yielded == 2
+
+
+def test_response_body_limit_accepts_body_at_exact_limit():
+    class FakeResponse:
+        async def aiter_bytes(self, chunk_size):
+            yield b"123"
+            yield b"45"
+
+    consumed, truncated = asyncio.run(_read_response_body_limited(FakeResponse(), 5))
+
+    assert consumed == 5
+    assert truncated is False
+
+
+def test_response_body_limit_rejects_negative_limit():
+    class FakeResponse:
+        async def aiter_bytes(self, chunk_size):
+            yield b"unused"
+
+    with pytest.raises(ValueError, match="must not be negative"):
+        asyncio.run(_read_response_body_limited(FakeResponse(), -1))
