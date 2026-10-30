@@ -136,7 +136,7 @@ async def probe(domain: str) -> dict:
                     powered = response.headers.get("x-powered-by", "")[:500]
                     # Only trust explicit version disclosure in X-Powered-By, never page content.
                     import re
-                    matches = re.findall(r"(?i)PHP\\s*/?\\s*(\\d+\\.\\d+(?:\\.\\d+)?)", powered)
+                    matches = re.findall(r"(?i)PHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)", powered)
                     version = matches[0] if matches else None
                     indicator = "php" in powered.lower() or "php" in server.lower()
                     return {
