@@ -88,19 +88,34 @@ def normalize_domain(raw: str) -> str:
     return value.encode("idna").decode("ascii")
 
 
+def _validate_public_ips(answers) -> list[str]:
+    ips = sorted({item[4][0].split("%", 1)[0] for item in answers})
+    if not ips:
+        raise RuntimeError("Ingen DNS-adresser")
+    for address in ips:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise RuntimeError("Domænet peger på en ikke-offentlig IP; scanning afvist")
+    return ips
+
+
 def resolve_public_ips(host: str) -> list[str]:
+    """Synchronous resolver retained for direct validation and compatibility tests."""
     try:
         answers = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise RuntimeError("DNS-opslag fejlede") from exc
-    ips = sorted({item[4][0].split("%", 1)[0] for item in answers})
-    if not ips:
-        raise RuntimeError("Ingen DNS-adresser")
-    for text in ips:
-        ip = ipaddress.ip_address(text)
-        if not ip.is_global:
-            raise RuntimeError("Domænet peger på en ikke-offentlig IP; scanning afvist")
-    return ips
+    return _validate_public_ips(answers)
+
+
+async def resolve_public_ips_async(host: str) -> list[str]:
+    """Resolve DNS without blocking the async request/event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+        answers = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise RuntimeError("DNS-opslag fejlede") from exc
+    return _validate_public_ips(answers)
 
 
 def _pinned_request_target(domain: str, ip_text: str, scheme: str) -> tuple[str, dict[str, str], dict[str, str]]:
@@ -119,7 +134,7 @@ async def probe(domain: str) -> dict:
         try:
             # Resolve once, reject mixed/private answers, then pin TCP to an approved IP.
             # The original hostname remains the HTTP Host and TLS verification name.
-            approved_ips = resolve_public_ips(domain)
+            approved_ips = await resolve_public_ips_async(domain)
             pinned_url, host_header, tls_extensions = _pinned_request_target(domain, approved_ips[0], scheme)
             async with httpx.AsyncClient(
                 timeout=TIMEOUT,
