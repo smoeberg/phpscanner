@@ -297,8 +297,10 @@ def _safe_csv_cell(value):
     """Neutralize spreadsheet formulas in untrusted textual CSV cells."""
     if not isinstance(value, str):
         return value
-    stripped = value.lstrip(" 	\r\n")
-    if stripped.startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
+    if value.startswith(("\\t", "\\r", "\\n")):
+        return "'" + value
+    stripped = value.lstrip(" ")
+    if stripped.startswith(("=", "+", "-", "@")):
         prefix_length = len(value) - len(stripped)
         return value[:prefix_length] + "'" + stripped
     return value
