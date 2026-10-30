@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import (
     DomainImport,
+    _pinned_request_target,
     app,
     normalize_domain,
     require_api_key,
