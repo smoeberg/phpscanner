@@ -122,7 +122,7 @@ async def probe(domain: str) -> dict:
                     combined = f"{server} {powered} {text[:MAX_BYTES]}"
                     # Only capture explicit PHP version strings; do not infer a version from CMS names.
                     import re
-                    matches = re.findall(r"(?i)PHP\\s*/?\\s*(\\d+\\.\\d+(?:\\.\\d+)?)", combined)
+                    matches = re.findall(r"(?i)PHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)", combined)
                     version = matches[0] if matches else None
                     indicator = bool(matches) or "php" in powered.lower() or "php" in server.lower()
                     return {
