@@ -328,7 +328,7 @@ def test_safe_csv_cell_neutralizes_formula_prefixes(value):
     from app.main import _safe_csv_cell
 
     safe = _safe_csv_cell(value)
-    if value.startswith(("\\t", "\\r", "\\n")):
+    if value.startswith(("\t", "\r", "\n")):
         # A leading control character is neutralized at the start of the cell.
         assert safe == "'" + value
     else:
