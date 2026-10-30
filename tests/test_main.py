@@ -1,9 +1,13 @@
+import asyncio
 import socket
+
+import httpx
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from app import main
 from app.main import (
     DomainImport,
     _pinned_request_target,
@@ -134,7 +138,7 @@ def test_pinned_request_target_uses_ip_but_preserves_hostname_for_http_and_tls()
 
     assert url == "https://8.8.8.8/"
     assert headers == {"Host": "example.com"}
-    assert extensions == {"sni_hostname": "example.com"}
+    assert extensions == {"sni_hostname": b"example.com"}
 
 
 def test_pinned_request_target_formats_ipv6_address():
@@ -142,4 +146,36 @@ def test_pinned_request_target_formats_ipv6_address():
 
     assert url == "http://[2606:4700:4700::1111]/"
     assert headers["Host"] == "example.com"
-    assert extensions["sni_hostname"] == "example.com"
+    assert extensions["sni_hostname"] == b"example.com"
+
+
+
+def test_probe_sends_request_to_pinned_ip_with_original_host_and_tls_name(monkeypatch):
+    observed = {}
+
+    async def handler(request):
+        observed["url"] = request.url
+        observed["host"] = request.headers.get("host")
+        observed["sni_hostname"] = request.extensions.get("sni_hostname")
+        return httpx.Response(
+            200,
+            headers={"server": "test-server", "x-powered-by": "PHP/8.2.1"},
+            content=b"ok",
+        )
+
+    real_async_client = httpx.AsyncClient
+
+    def client_with_mock_transport(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(main, "resolve_public_ips", lambda _domain: ["8.8.8.8"])
+    monkeypatch.setattr(main.httpx, "AsyncClient", client_with_mock_transport)
+
+    result = asyncio.run(main.probe("example.com"))
+
+    assert observed["url"].host == "8.8.8.8"
+    assert observed["host"] == "example.com"
+    assert observed["sni_hostname"] == b"example.com"
+    assert result["status_code"] == 200
+    assert result["version_observed"] == "8.2.1"
