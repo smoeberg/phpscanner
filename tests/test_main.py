@@ -440,3 +440,44 @@ def test_response_body_limit_rejects_negative_limit():
 
     with pytest.raises(ValueError, match="must not be negative"):
         asyncio.run(_read_response_body_limited(FakeResponse(), -1))
+
+
+def test_scan_rejects_unverified_domain(monkeypatch):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            assert "verified_at" in query
+            return self
+        def fetchone(self): return (7, "example.com", None)
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Domænet skal verificeres før scanning"
+
+
+def test_challenge_returns_dns_record_and_stores_only_hash(monkeypatch):
+    import hashlib
+
+    captured = {}
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            if query.startswith("SELECT domain"): return self
+            captured["params"] = params
+            return self
+        def fetchone(self): return ("example.com",)
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/verification-challenge", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["record_name"] == "_dk-php-scanner-verification.example.com"
+    assert data["record_type"] == "TXT"
+    token = data["record_value"].split("=", 1)[1]
+    assert captured["params"][0] == hashlib.sha256(token.encode()).hexdigest()
+    assert token not in captured["params"][0]
