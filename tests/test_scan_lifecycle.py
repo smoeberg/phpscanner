@@ -91,7 +91,7 @@ def test_cleanup_failure_does_not_mask_timeout(monkeypatch):
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(main, "db_connect", _Connection)
-    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: 2)
+    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: (2, "test-lease-token"))
     monkeypatch.setattr(main, "release_scan_capacity", failing_release)
     monkeypatch.setattr(main, "probe", slow_probe)
     monkeypatch.setattr(main, "SCAN_EXECUTION_DEADLINE_SECONDS", 0.001)
