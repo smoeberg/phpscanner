@@ -114,11 +114,18 @@ def test_stale_worker_release_cannot_clear_recovered_workers_lease(postgres_rese
     assert worker_b[0] == worker_a[0]
     assert worker_b[1] != worker_a[1]
 
+    # Occupy the other three slots so capacity exhaustion proves B's lease
+    # remains active after A's stale finally block.
+    other_workers = [main.reserve_scan_capacity(domain_id) for domain_id in (3, 4, 5)]
+    assert all(reservation is not None for reservation in other_workers)
+
     # A's finally block runs late. Its old token must not release B's lease.
     main.release_scan_capacity(*worker_a)
-    assert main.reserve_scan_capacity(3) is None
+    assert main.reserve_scan_capacity(6) is None
 
     main.release_scan_capacity(*worker_b)
+    for reservation in other_workers:
+        main.release_scan_capacity(*reservation)
     worker_c = main.reserve_scan_capacity(3)
     assert worker_c is not None
     assert worker_c[0] == worker_b[0]
@@ -135,11 +142,15 @@ def test_old_token_cannot_release_a_later_reservation_on_same_slot(postgres_rese
     assert second is not None
     assert second[0] == first[0]
     assert second[1] != first[1]
+    other_workers = [main.reserve_scan_capacity(domain_id) for domain_id in (3, 4, 5)]
+    assert all(reservation is not None for reservation in other_workers)
 
     main.release_scan_capacity(*first)
-    assert main.reserve_scan_capacity(3) is None
+    assert main.reserve_scan_capacity(6) is None
 
     main.release_scan_capacity(*second)
+    for reservation in other_workers:
+        main.release_scan_capacity(*reservation)
     third = main.reserve_scan_capacity(3)
     assert third is not None
     main.release_scan_capacity(*third)
