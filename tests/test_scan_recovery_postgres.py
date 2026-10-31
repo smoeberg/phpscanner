@@ -126,7 +126,7 @@ def test_stale_worker_release_cannot_clear_recovered_workers_lease(postgres_rese
     main.release_scan_capacity(*worker_b)
     for reservation in other_workers:
         main.release_scan_capacity(*reservation)
-    worker_c = main.reserve_scan_capacity(3)
+    worker_c = main.reserve_scan_capacity(7)
     assert worker_c is not None
     assert worker_c[0] == worker_b[0]
     assert worker_c[1] not in (worker_a[1], worker_b[1])
@@ -151,6 +151,6 @@ def test_old_token_cannot_release_a_later_reservation_on_same_slot(postgres_rese
     main.release_scan_capacity(*second)
     for reservation in other_workers:
         main.release_scan_capacity(*reservation)
-    third = main.reserve_scan_capacity(3)
+    third = main.reserve_scan_capacity(7)
     assert third is not None
     main.release_scan_capacity(*third)
