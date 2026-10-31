@@ -818,8 +818,8 @@ def test_scan_releases_reserved_slot_after_probe(monkeypatch):
 
     released = []
     monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
-    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: 3)
-    monkeypatch.setattr(main, "release_scan_capacity", released.append)
+    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: (3, "test-lease-token"))
+    monkeypatch.setattr(main, "release_scan_capacity", lambda slot, token: released.append((slot, token)))
     async def fake_probe(_domain):
         return {"status_code": 200, "final_url": "https://example.com/", "server_header": "",
                 "powered_by": "", "php_indicator": False, "version_observed": None,
@@ -828,4 +828,4 @@ def test_scan_releases_reserved_slot_after_probe(monkeypatch):
     monkeypatch.setattr(main, "API_KEY", "test-secret")
     response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
     assert response.status_code == 200
-    assert released == [3]
+    assert released == [(3, "test-lease-token")]
