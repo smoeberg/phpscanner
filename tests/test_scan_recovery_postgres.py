@@ -154,3 +154,49 @@ def test_old_token_cannot_release_a_later_reservation_on_same_slot(postgres_rese
     third = main.reserve_scan_capacity(7)
     assert third is not None
     main.release_scan_capacity(*third)
+
+
+
+def test_stalled_worker_can_overlap_recovered_worker_probe(postgres_reservations):
+    """Expose that lease recovery limits leases, not necessarily live probes."""
+    worker_a = main.reserve_scan_capacity(1)
+    assert worker_a is not None
+
+    probe_a_started = threading.Event()
+    allow_probe_a_to_finish = threading.Event()
+
+    def worker_a_probe():
+        probe_a_started.set()
+        assert allow_probe_a_to_finish.wait(timeout=10)
+
+    thread_a = threading.Thread(target=worker_a_probe)
+    thread_a.start()
+    assert probe_a_started.wait(timeout=5)
+
+    # A is still executing its probe, but its lease expires and B takes over.
+    _expire_slot(postgres_reservations, worker_a)
+    worker_b = main.reserve_scan_capacity(2)
+    assert worker_b is not None
+    assert worker_b[0] == worker_a[0]
+    assert worker_b[1] != worker_a[1]
+
+    # Three more workers fill the remaining current leases.
+    other_workers = [main.reserve_scan_capacity(domain_id) for domain_id in (3, 4, 5)]
+    assert all(reservation is not None for reservation in other_workers)
+
+    # A, B and C/D/E are all represented as executing probes: five live
+    # probes despite only four current PostgreSQL leases.
+    active_probe_count = 1 + 1 + len(other_workers)
+    assert active_probe_count == main.MAX_CONCURRENT_SCANS + 1
+
+    # A's late finally/release is fenced and cannot clear B's current lease.
+    main.release_scan_capacity(*worker_a)
+    assert main.reserve_scan_capacity(6) is None
+
+    allow_probe_a_to_finish.set()
+    thread_a.join(timeout=5)
+    assert not thread_a.is_alive()
+
+    main.release_scan_capacity(*worker_b)
+    for reservation in other_workers:
+        main.release_scan_capacity(*reservation)
