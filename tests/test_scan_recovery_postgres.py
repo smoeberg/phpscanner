@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import threading
 
 from app import main
+from test_scan_capacity_postgres import postgres_reservations
 
 
 def _expire_slot(connect, slot_id):
