@@ -30,8 +30,8 @@ class _Connection:
 def scan_state(monkeypatch):
     releases = []
     monkeypatch.setattr(main, "db_connect", _Connection)
-    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: 2)
-    monkeypatch.setattr(main, "release_scan_capacity", lambda slot: releases.append(slot))
+    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: (2, "test-lease-token"))
+    monkeypatch.setattr(main, "release_scan_capacity", lambda slot, token: releases.append((slot, token)))
     return releases
 
 
@@ -46,7 +46,7 @@ def test_timeout_returns_504_and_releases_reservation(monkeypatch, scan_state):
         asyncio.run(main.scan_domain(7))
 
     assert exc.value.status_code == 504
-    assert scan_state == [2]
+    assert scan_state == [(2, "test-lease-token")]
 
 
 def test_probe_exception_is_preserved_and_reservation_released(monkeypatch, scan_state):
@@ -87,7 +87,7 @@ def test_cleanup_failure_does_not_mask_timeout(monkeypatch):
     async def slow_probe(_domain):
         await asyncio.sleep(0.05)
 
-    def failing_release(_slot):
+    def failing_release(_slot, _token):
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(main, "db_connect", _Connection)
