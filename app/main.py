@@ -23,6 +23,7 @@ MAX_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", "65536"))
 MAX_CONCURRENT_SCANS = 4
 SCAN_COOLDOWN_SECONDS = 60
 SCAN_SLOT_LEASE_SECONDS = 90
+SCAN_EXECUTION_DEADLINE_SECONDS = 60
 app = FastAPI(title="DK PHP Exposure Scanner", version="0.1.0")
 
 def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
@@ -435,7 +436,10 @@ async def scan_domain(domain_id: int):
     if slot_id is None:
         raise HTTPException(429, "Scanning er midlertidigt begrænset; prøv igen senere")
     try:
-        result = await probe(row[1])
+        async with asyncio.timeout(SCAN_EXECUTION_DEADLINE_SECONDS):
+            result = await probe(row[1])
+    except TimeoutError:
+        raise HTTPException(504, "Scanningen overskred den maksimale køretid")
     finally:
         try:
             release_scan_capacity(slot_id)
