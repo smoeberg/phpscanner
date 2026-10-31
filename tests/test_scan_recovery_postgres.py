@@ -67,9 +67,9 @@ def test_repeated_reserve_release_cycles_leave_all_slots_reusable(postgres_reser
         final_slots = list(pool.map(reserve, (1, 2, 3, 4)))
 
     assert all(slot is not None for slot in final_slots)
-    assert len(set(final_slots)) == main.MAX_CONCURRENT_SCANS
+    assert len({slot[0] for slot in final_slots}) == main.MAX_CONCURRENT_SCANS
     for slot in final_slots:
-        main.release_scan_capacity(slot)
+        main.release_scan_capacity(*slot)
 
 
 def test_expired_crashed_slot_is_recovered_under_concurrent_contention(postgres_reservations):
@@ -95,8 +95,51 @@ def test_expired_crashed_slot_is_recovered_under_concurrent_contention(postgres_
 
     granted = [slot for slot in slots if slot is not None]
     assert len(granted) == 1
-    assert granted[0] == crashed_slot
+    assert granted[0][0] == crashed_slot[0]
+    assert granted[0][1] != crashed_slot[1]
 
-    main.release_scan_capacity(granted[0])
+    main.release_scan_capacity(*granted[0])
     for slot in live_slots:
         main.release_scan_capacity(slot)
+
+
+
+def test_stale_worker_release_cannot_clear_recovered_workers_lease(postgres_reservations):
+    worker_a = main.reserve_scan_capacity(1)
+    assert worker_a is not None
+    _expire_slot(postgres_reservations, worker_a)
+
+    worker_b = main.reserve_scan_capacity(2)
+    assert worker_b is not None
+    assert worker_b[0] == worker_a[0]
+    assert worker_b[1] != worker_a[1]
+
+    # A's finally block runs late. Its old token must not release B's lease.
+    main.release_scan_capacity(*worker_a)
+    assert main.reserve_scan_capacity(3) is None
+
+    main.release_scan_capacity(*worker_b)
+    worker_c = main.reserve_scan_capacity(3)
+    assert worker_c is not None
+    assert worker_c[0] == worker_b[0]
+    assert worker_c[1] not in (worker_a[1], worker_b[1])
+    main.release_scan_capacity(*worker_c)
+
+
+def test_old_token_cannot_release_a_later_reservation_on_same_slot(postgres_reservations):
+    first = main.reserve_scan_capacity(1)
+    assert first is not None
+    main.release_scan_capacity(*first)
+
+    second = main.reserve_scan_capacity(2)
+    assert second is not None
+    assert second[0] == first[0]
+    assert second[1] != first[1]
+
+    main.release_scan_capacity(*first)
+    assert main.reserve_scan_capacity(3) is None
+
+    main.release_scan_capacity(*second)
+    third = main.reserve_scan_capacity(3)
+    assert third is not None
+    main.release_scan_capacity(*third)
