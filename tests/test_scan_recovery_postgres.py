@@ -47,6 +47,13 @@ def test_repeated_reserve_release_cycles_leave_all_slots_reusable(postgres_reser
     assert len(granted) == 20
     assert set(granted).issubset(set(range(1, main.MAX_CONCURRENT_SCANS + 1)))
 
+    # Reset cooldown timestamps so this assertion isolates slot reuse.
+    with postgres_reservations() as conn:
+        conn.execute(
+            "UPDATE scan_rate_limits SET last_scan_started_at=%s",
+            (datetime.now(timezone.utc) - timedelta(seconds=main.SCAN_COOLDOWN_SECONDS + 1),),
+        )
+
     # After churn, all four slots can be acquired concurrently again.
     barrier = threading.Barrier(main.MAX_CONCURRENT_SCANS)
 
