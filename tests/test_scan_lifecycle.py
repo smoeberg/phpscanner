@@ -61,7 +61,7 @@ def test_probe_exception_is_preserved_and_reservation_released(monkeypatch, scan
     with pytest.raises(ProbeFailure, match="probe failed"):
         asyncio.run(main.scan_domain(7))
 
-    assert scan_state == [2]
+    assert scan_state == [(2, "test-lease-token")]
 
 
 def test_task_cancellation_releases_reservation(monkeypatch, scan_state):
