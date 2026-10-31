@@ -72,8 +72,14 @@ def test_repeated_reserve_release_cycles_leave_all_slots_reusable(postgres_reser
 
 
 def test_expired_crashed_slot_is_recovered_under_concurrent_contention(postgres_reservations):
+    # Occupy the other three slots so contention is specifically for the
+    # single slot abandoned by the crashed worker.
     crashed_slot = main.reserve_scan_capacity(1)
     assert crashed_slot is not None
+    live_slots = [main.reserve_scan_capacity(domain_id) for domain_id in (2, 3, 4)]
+    assert all(slot is not None for slot in live_slots)
+    assert crashed_slot not in live_slots
+
     _expire_slot(postgres_reservations, crashed_slot)
 
     workers = 8
@@ -84,9 +90,12 @@ def test_expired_crashed_slot_is_recovered_under_concurrent_contention(postgres_
         return main.reserve_scan_capacity(domain_id)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        slots = list(pool.map(reserve, range(2, workers + 2)))
+        slots = list(pool.map(reserve, range(5, workers + 5)))
 
     granted = [slot for slot in slots if slot is not None]
     assert len(granted) == 1
     assert granted[0] == crashed_slot
+
     main.release_scan_capacity(granted[0])
+    for slot in live_slots:
+        main.release_scan_capacity(slot)
