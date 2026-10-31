@@ -58,9 +58,11 @@ def startup():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scan_slots (
                 slot_id INTEGER PRIMARY KEY,
-                lease_until TIMESTAMPTZ NOT NULL DEFAULT '-infinity'
+                lease_until TIMESTAMPTZ NOT NULL DEFAULT '-infinity',
+                lease_token TEXT
             )
         """)
+        conn.execute("ALTER TABLE scan_slots ADD COLUMN IF NOT EXISTS lease_token TEXT")
         conn.execute(
             "INSERT INTO scan_slots(slot_id) SELECT generate_series(1, %s) ON CONFLICT DO NOTHING",
             (MAX_CONCURRENT_SCANS,),
@@ -376,8 +378,9 @@ def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
     return [{"id": r[0], "domain": r[1], "source": r[2], "created_at": r[3].isoformat(), "verified_at": r[4].isoformat() if r[4] else None, "verified": r[4] is not None} for r in rows]
 
 
-def reserve_scan_capacity(domain_id: int) -> int | None:
-    """Atomically reserve a global DB-backed slot and a per-domain cooldown."""
+def reserve_scan_capacity(domain_id: int) -> tuple[int, str] | None:
+    """Reserve a global slot and return its unique ownership fencing token."""
+    lease_token = secrets.token_urlsafe(32)
     with db_connect() as conn:
         slot = conn.execute(
             """
@@ -389,12 +392,13 @@ def reserve_scan_capacity(domain_id: int) -> int | None:
                 LIMIT 1
             )
             UPDATE scan_slots AS s
-            SET lease_until = now() + (%s * interval '1 second')
+            SET lease_until = now() + (%s * interval '1 second'),
+                lease_token = %s
             FROM candidate
             WHERE s.slot_id = candidate.slot_id
             RETURNING s.slot_id
             """,
-            (SCAN_SLOT_LEASE_SECONDS,),
+            (SCAN_SLOT_LEASE_SECONDS, lease_token),
         ).fetchone()
         if not slot:
             return None
@@ -411,14 +415,21 @@ def reserve_scan_capacity(domain_id: int) -> int | None:
             (domain_id, SCAN_COOLDOWN_SECONDS),
         ).fetchone()
         if not permitted:
-            conn.execute("UPDATE scan_slots SET lease_until = '-infinity' WHERE slot_id = %s", (slot_id,))
+            conn.execute(
+                "UPDATE scan_slots SET lease_until = '-infinity', lease_token = NULL WHERE slot_id = %s AND lease_token = %s",
+                (slot_id, lease_token),
+            )
             return None
-        return slot_id
+        return slot_id, lease_token
 
 
-def release_scan_capacity(slot_id: int) -> None:
+def release_scan_capacity(slot_id: int, lease_token: str) -> None:
+    """Release only the reservation still owned by this exact fencing token."""
     with db_connect() as conn:
-        conn.execute("UPDATE scan_slots SET lease_until = '-infinity' WHERE slot_id = %s", (slot_id,))
+        conn.execute(
+            "UPDATE scan_slots SET lease_until = '-infinity', lease_token = NULL WHERE slot_id = %s AND lease_token = %s",
+            (slot_id, lease_token),
+        )
 
 
 @app.post("/domains/{domain_id}/scan", dependencies=[Depends(require_api_key)])
@@ -430,11 +441,12 @@ async def scan_domain(domain_id: int):
     if row[2] is None:
         raise HTTPException(403, "Domænet skal verificeres før scanning")
     try:
-        slot_id = reserve_scan_capacity(row[0])
+        reservation = reserve_scan_capacity(row[0])
     except Exception:
         raise HTTPException(503, "Scan-kapacitet kunne ikke reserveres")
-    if slot_id is None:
+    if reservation is None:
         raise HTTPException(429, "Scanning er midlertidigt begrænset; prøv igen senere")
+    slot_id, lease_token = reservation
     try:
         async with asyncio.timeout(SCAN_EXECUTION_DEADLINE_SECONDS):
             result = await probe(row[1])
@@ -442,7 +454,7 @@ async def scan_domain(domain_id: int):
         raise HTTPException(504, "Scanningen overskred den maksimale køretid")
     finally:
         try:
-            release_scan_capacity(slot_id)
+            release_scan_capacity(slot_id, lease_token)
         except Exception:
             # The lease expires automatically; never expose database details.
             pass
