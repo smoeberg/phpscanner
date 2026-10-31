@@ -80,7 +80,7 @@ def test_task_cancellation_releases_reservation(monkeypatch, scan_state):
             await task
 
     asyncio.run(run())
-    assert scan_state == [2]
+    assert scan_state == [(2, "test-lease-token")]
 
 
 def test_cleanup_failure_does_not_mask_timeout(monkeypatch):
