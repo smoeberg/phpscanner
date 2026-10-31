@@ -37,7 +37,8 @@ def postgres_reservations(monkeypatch):
             conn.execute("""
                 CREATE TABLE scan_slots (
                     slot_id INTEGER PRIMARY KEY,
-                    lease_until TIMESTAMPTZ NOT NULL DEFAULT '-infinity'
+                    lease_until TIMESTAMPTZ NOT NULL DEFAULT '-infinity',
+                    lease_token TEXT
                 )
             """)
             conn.execute("""
@@ -72,12 +73,12 @@ def test_concurrent_reservations_never_exceed_global_slot_count(postgres_reserva
     with ThreadPoolExecutor(max_workers=workers) as pool:
         reservations = list(pool.map(reserve, range(1, workers + 1)))
 
-    granted = [slot for slot in reservations if slot is not None]
+    granted = [reservation for reservation in reservations if reservation is not None]
     assert len(granted) == main.MAX_CONCURRENT_SCANS
-    assert len(set(granted)) == main.MAX_CONCURRENT_SCANS
+    assert len({reservation[0] for reservation in granted}) == main.MAX_CONCURRENT_SCANS
 
     with ThreadPoolExecutor(max_workers=len(granted)) as pool:
-        list(pool.map(main.release_scan_capacity, granted))
+        list(pool.map(lambda reservation: main.release_scan_capacity(*reservation), granted))
 
 
 def test_same_domain_cooldown_is_atomic_across_concurrent_connections(postgres_reservations):
@@ -88,7 +89,7 @@ def test_same_domain_cooldown_is_atomic_across_concurrent_connections(postgres_r
         barrier.wait(timeout=10)
         slot = main.reserve_scan_capacity(1)
         if slot is not None:
-            main.release_scan_capacity(slot)
+            main.release_scan_capacity(*slot)
         return slot
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -104,12 +105,13 @@ def test_expired_worker_reservation_can_be_reclaimed(postgres_reservations):
     with postgres_reservations() as conn:
         conn.execute(
             "UPDATE scan_slots SET lease_until=%s WHERE slot_id=%s",
-            (datetime.now(timezone.utc) - timedelta(seconds=1), first),
+            (datetime.now(timezone.utc) - timedelta(seconds=1), first[0]),
         )
 
     second = main.reserve_scan_capacity(2)
-    assert second == first
-    main.release_scan_capacity(second)
+    assert second[0] == first[0]
+    assert second[1] != first[1]
+    main.release_scan_capacity(*second)
 
 
 def test_scan_deadline_is_strictly_inside_slot_lease():
