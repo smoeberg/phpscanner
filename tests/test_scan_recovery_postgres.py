@@ -11,7 +11,7 @@ def _expire_slot(connect, slot_id):
     with connect() as conn:
         conn.execute(
             "UPDATE scan_slots SET lease_until=%s WHERE slot_id=%s",
-            (datetime.now(timezone.utc) - timedelta(seconds=1), slot_id),
+            (datetime.now(timezone.utc) - timedelta(seconds=1), slot_id[0]),
         )
 
 
@@ -28,11 +28,12 @@ def test_worker_crash_keeps_live_lease_then_recovers_expired_slot(postgres_reser
     # Simulate lease expiry after the crashed worker has stopped heartbeating.
     _expire_slot(postgres_reservations, crashed_slot)
     recovered = main.reserve_scan_capacity(5)
-    assert recovered == crashed_slot
+    assert recovered[0] == crashed_slot[0]
+    assert recovered[1] != crashed_slot[1]
 
     for slot in other_slots:
-        main.release_scan_capacity(slot)
-    main.release_scan_capacity(recovered)
+        main.release_scan_capacity(*slot)
+    main.release_scan_capacity(*recovered)
 
 
 def test_repeated_reserve_release_cycles_leave_all_slots_reusable(postgres_reservations):
@@ -43,10 +44,10 @@ def test_repeated_reserve_release_cycles_leave_all_slots_reusable(postgres_reser
         slot = main.reserve_scan_capacity(domain_id)
         assert slot is not None
         granted.append(slot)
-        main.release_scan_capacity(slot)
+        main.release_scan_capacity(*slot)
 
     assert len(granted) == 20
-    assert set(granted).issubset(set(range(1, main.MAX_CONCURRENT_SCANS + 1)))
+    assert {reservation[0] for reservation in granted}.issubset(set(range(1, main.MAX_CONCURRENT_SCANS + 1)))
 
     # Reset cooldown timestamps so this assertion isolates slot reuse.
     with postgres_reservations() as conn:
@@ -78,7 +79,7 @@ def test_expired_crashed_slot_is_recovered_under_concurrent_contention(postgres_
     assert crashed_slot is not None
     live_slots = [main.reserve_scan_capacity(domain_id) for domain_id in (2, 3, 4)]
     assert all(slot is not None for slot in live_slots)
-    assert crashed_slot not in live_slots
+    assert crashed_slot[0] not in [slot[0] for slot in live_slots]
 
     _expire_slot(postgres_reservations, crashed_slot)
 
