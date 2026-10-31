@@ -100,7 +100,7 @@ def test_expired_crashed_slot_is_recovered_under_concurrent_contention(postgres_
 
     main.release_scan_capacity(*granted[0])
     for slot in live_slots:
-        main.release_scan_capacity(slot)
+        main.release_scan_capacity(*slot)
 
 
 
