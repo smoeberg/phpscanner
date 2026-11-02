@@ -209,7 +209,7 @@ def test_operator_can_import_authorize_scan_review_and_export(
     assert "prospect_associations" in csv_lines[0]
     assert "Example Organization" in csv_lines[1]
     assert "unverified" in csv_lines[1]
-    assert String(prospect_id) in csv_lines[1]
+    assert str(prospect_id) in csv_lines[1]
 
     assert authorization_data["scan_target_id"]
 
