@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import os
 import threading
+import time
 import uuid
 
 import psycopg
@@ -179,6 +180,20 @@ def test_operator_can_create_list_disable_and_revoke_authorization(authorization
     assert main.reserve_scan_capacity(1) is not None
 
 
+def _assert_backend_waits_on_lock(connect, backend_pid):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with connect() as conn:
+            blockers = conn.execute(
+                "SELECT pg_blocking_pids(%s)",
+                (backend_pid,),
+            ).fetchone()[0]
+        if blockers:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"PostgreSQL backend {backend_pid} did not wait on a lock")
+
+
 def test_revoking_authorization_prevents_future_scan_reservations(authorization_db, monkeypatch):
     monkeypatch.setattr(main, "API_KEY", "test-secret")
     client = TestClient(main.app)
@@ -230,10 +245,12 @@ def test_revocation_waits_for_in_flight_authorized_reservation(authorization_db,
     authorization_locked = threading.Event()
     allow_reservation_to_finish = threading.Event()
     revocation_started = threading.Event()
+    revocation_backend_pid = []
 
     class ObservedConnection:
         def __init__(self, connection):
             self.connection = connection
+            self.backend_pid = connection.execute("SELECT pg_backend_pid()").fetchone()[0]
 
         def __enter__(self):
             self.connection.__enter__()
@@ -251,6 +268,7 @@ def test_revocation_waits_for_in_flight_authorized_reservation(authorization_db,
                     raise TimeoutError("test did not release reservation lock")
                 return result
             if "UPDATE AUTHORIZATION_BASES" in normalized:
+                revocation_backend_pid.append(self.backend_pid)
                 revocation_started.set()
             return self.connection.execute(query, *args, **kwargs)
 
@@ -269,8 +287,9 @@ def test_revocation_waits_for_in_flight_authorized_reservation(authorization_db,
         )
         try:
             assert revocation_started.wait(timeout=10)
-            # The UPDATE has started but must wait for the reservation's
-            # FOR SHARE lock to be released by its transaction commit.
+            # Confirm PostgreSQL itself reports the UPDATE backend blocked by
+            # the reservation transaction, rather than relying on timing.
+            _assert_backend_waits_on_lock(authorization_db, revocation_backend_pid[0])
             assert not revocation_future.done()
         finally:
             allow_reservation_to_finish.set()
@@ -299,10 +318,13 @@ def test_reservation_waits_for_revocation_commit_then_denies_scan(authorization_
     revocation_updated = threading.Event()
     allow_revocation_to_commit = threading.Event()
     reservation_query_started = threading.Event()
+    revocation_backend_pid = []
+    reservation_backend_pid = []
 
     class ObservedConnection:
         def __init__(self, connection):
             self.connection = connection
+            self.backend_pid = connection.execute("SELECT pg_backend_pid()").fetchone()[0]
 
         def __enter__(self):
             self.connection.__enter__()
@@ -314,12 +336,14 @@ def test_reservation_waits_for_revocation_commit_then_denies_scan(authorization_
         def execute(self, query, *args, **kwargs):
             normalized = " ".join(query.split()).upper()
             if "UPDATE AUTHORIZATION_BASES" in normalized:
+                revocation_backend_pid.append(self.backend_pid)
                 result = self.connection.execute(query, *args, **kwargs)
                 revocation_updated.set()
                 if not allow_revocation_to_commit.wait(timeout=10):
                     raise TimeoutError("test did not release revocation lock")
                 return result
             if "FOR SHARE OF ST, AB" in normalized:
+                reservation_backend_pid.append(self.backend_pid)
                 reservation_query_started.set()
             return self.connection.execute(query, *args, **kwargs)
 
@@ -338,8 +362,9 @@ def test_reservation_waits_for_revocation_commit_then_denies_scan(authorization_
         reservation_future = pool.submit(main.reserve_scan_capacity, 1)
         try:
             assert reservation_query_started.wait(timeout=10)
-            # The reservation's share-locking query cannot pass the
-            # uncommitted revocation update.
+            # Confirm the reservation query is blocked by the uncommitted
+            # revocation update, rather than relying on thread scheduling.
+            _assert_backend_waits_on_lock(authorization_db, reservation_backend_pid[0])
             assert not reservation_future.done()
         finally:
             allow_revocation_to_commit.set()
