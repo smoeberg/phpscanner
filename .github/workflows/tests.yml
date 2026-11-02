@@ -46,11 +46,24 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
       - name: Run tests
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/test
           SCANNER_API_KEY: test-secret
         run: python -m pytest -q
+
+      - name: Verify isolated PostgreSQL backup and restore
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: test
+          PGPASSWORD: test
+        run: bash scripts/verify-postgres-restore.sh
 
   compose-startup:
     runs-on: ubuntu-latest
