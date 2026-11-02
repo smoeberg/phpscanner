@@ -30,7 +30,7 @@ compose() {
 
 # Start from an empty database volume so every migration must run on first boot.
 compose down --volumes --remove-orphans
-docker compose config --quiet --env-file "$ENV_FILE"
+compose config --quiet
 docker build --tag dk-php-scanner-api:local .
 
 compose up -d
@@ -60,7 +60,17 @@ if [ "$revision" != "0004_scan_findings" ]; then
   exit 1
 fi
 
-table_count="$(compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_schema = '\''public'\'' AND table_name IN ('\''domains'\'', '\''scans'\'', '\''scan_rate_limits'\'', '\''scan_slots'\'', '\''prospects'\'', '\''prospect_domains'\'', '\''authorization_bases'\'', '\''scan_targets'\'', '\''scan_jobs'\'', '\''scan_observations'\'', '\''scan_findings'\'', '\''alembic_version'\'')"')"
+table_count="$(compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atq' <<'SQL'
+SELECT count(*)
+FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_name IN (
+    'domains', 'scans', 'scan_rate_limits', 'scan_slots', 'prospects',
+    'prospect_domains', 'authorization_bases', 'scan_targets', 'scan_jobs',
+    'scan_observations', 'scan_findings', 'alembic_version'
+  );
+SQL
+)"
 if [ "$table_count" != "12" ]; then
   echo "Expected all 12 application/migration tables, found: $table_count" >&2
   exit 1
