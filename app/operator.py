@@ -150,7 +150,9 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
         p.domains.map(d => d.domain + " (" + d.association_status + ")").join(", ") || "Ingen domæner"
       ]);
       $("prospects").replaceChildren(table(["ID","Prospect","Org.nr.","Tilknyttede domæner"], pRows));
-      const dRows = domains.map(d => {
+      const dRows = await Promise.all(domains.map(async d => {
+        const authorizations = await api("/domains/" + d.id + "/authorizations");
+        const currentlyAuthorized = authorizations.some(a => a.currently_authorized);
         const actions = el("div");
         const challenge = el("button","Opret DNS-challenge"); challenge.className="secondary";
         challenge.addEventListener("click", async () => {
@@ -161,15 +163,24 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
         verify.addEventListener("click", async () => {try{await api("/domains/"+d.id+"/verify",{method:"POST"});message("DNS-verifikation gennemført.");await refresh();}catch(e){message(e.message);}});
         const auth = el("button","Vis autorisation"); auth.className="secondary";
         auth.addEventListener("click", async () => { $("auth-domain").value=d.id; await loadAuthorizations(d.id); });
-        const scan = el("button","Start scanning"); scan.disabled=!d.verified;
+        const scan = el("button","Start scanning");
+        scan.disabled = !d.verified || !currentlyAuthorized;
+        scan.title = !d.verified
+          ? "Domænet skal DNS-verificeres først."
+          : (!currentlyAuthorized ? "Der mangler en gyldig og aktiv scanningstilladelse." : "");
         scan.addEventListener("click", async () => {
           try { const job=await api("/domains/"+d.id+"/scan",{method:"POST"}); message("Scan-job oprettet: "+job.job_id+" (queued)."); pollJob(job.job_id); }
           catch(e){message(e.message);}
         });
         actions.append(challenge,verify,auth,scan);
-        return [d.id,d.domain,d.verified?"Verificeret":"Ikke verificeret",actions];
-      });
-      $("domain-list").replaceChildren(table(["ID","Domæne","DNS-status","Handlinger"],dRows));
+        return [
+          d.id, d.domain,
+          d.verified ? "Verificeret" : "Ikke verificeret",
+          currentlyAuthorized ? "Gyldig tilladelse" : "Ingen gyldig tilladelse",
+          actions
+        ];
+      }));
+      $("domain-list").replaceChildren(table(["ID","Domæne","DNS-status","Scanningstilladelse","Handlinger"],dRows));
       const scanRows = scans.map(scan => {
         const actions = el("div");
         const details = el("button","Vis detaljer");
