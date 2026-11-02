@@ -74,6 +74,10 @@ The worker runs separately from the API, claims jobs with PostgreSQL row locking
 
 Each completed scan also stores the raw HTTP response status, `Server` header, and `X-Powered-By` header as separate observations linked to the scan. Retrieve them with the API-key-protected `GET /scans/{scan_id}/observations` endpoint. Response bodies are discarded and are not persisted. These observations are evidence only; they do not by themselves establish a vulnerability or CVE.
 
+The worker also derives one separate `php_runtime_disclosure` finding per completed scan. Retrieve it with the API-key-protected `GET /scans/{scan_id}/findings` endpoint. An explicit `X-Powered-By: PHP` value is classified as a high-confidence technology disclosure; a PHP string in `Server` is only a low-confidence possible indicator. Otherwise the assessment is `undetermined`—not proof that PHP is absent. Each finding includes rationale and references to the raw observation IDs. A disclosed version is not classified as outdated or vulnerable without an authoritative advisory source.
+
+The existing `/results.csv` export includes the finding assessment, confidence, disclosed version, rationale, and evidence JSON alongside the original scan columns. Historical scans are preserved and are not backfilled with inferred findings.
+
 ## Scan rate limits
 
 - At most 4 scans may hold a global database-backed capacity slot at once.

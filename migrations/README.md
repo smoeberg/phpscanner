@@ -36,3 +36,8 @@ Revision `0002_scan_jobs` adds a durable queue without rewriting historical scan
 ## Structured scan observations
 
 Revision `0003_scan_observations` adds a child table for raw HTTP response observations. Each scan may store its response status, `Server` header, and `X-Powered-By` header independently, with a source identifier and observation timestamp. The unique scan/type constraint makes worker retries idempotent. Existing scan rows are preserved and receive no inferred observations. Response bodies are not stored.
+
+
+## Derived scan findings
+
+Revision `0004_scan_findings` stores one conservative PHP disclosure assessment per scan, separately from raw observations. Findings retain their assessment, confidence, rationale, observed version when explicitly disclosed, and references to the source observation rows. The initial rule set reports explicit `X-Powered-By: PHP` disclosure, treats a PHP string in `Server` as a low-confidence possible indicator, and otherwise reports `undetermined`. It never treats missing headers as proof PHP is absent or a disclosed version as proof of a vulnerability. Existing scans are not backfilled.

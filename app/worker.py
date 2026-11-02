@@ -13,7 +13,10 @@ import secrets
 
 import psycopg
 
+import json
+
 from app import main
+from app.findings import derive_findings
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("scanner.worker")
@@ -151,6 +154,41 @@ def persist_result(job_id: int, domain_id: int, token: str, result: dict) -> Non
                 ON CONFLICT (scan_id, observation_type) DO NOTHING
                 """,
                 (scan_id, observation_type, str(observed_value), source),
+            )
+
+        observation_rows = conn.execute(
+            """
+            SELECT id, observation_type, observed_value, source
+            FROM scan_observations
+            WHERE scan_id = %s
+            ORDER BY id
+            """,
+            (scan_id,),
+        ).fetchall()
+        derived = derive_findings([
+            {
+                "id": row[0],
+                "observation_type": row[1],
+                "observed_value": row[2],
+                "source": row[3],
+            }
+            for row in observation_rows
+        ])
+        for finding in derived:
+            conn.execute(
+                """
+                INSERT INTO scan_findings(
+                    scan_id, finding_type, assessment, confidence,
+                    version_observed, rationale, evidence
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (scan_id, finding_type) DO NOTHING
+                """,
+                (
+                    scan_id, finding["finding_type"], finding["assessment"],
+                    finding["confidence"], finding["version_observed"],
+                    finding["rationale"], json.dumps(finding["evidence"]),
+                ),
             )
 
         updated = conn.execute(
