@@ -90,7 +90,7 @@ The existing `/results.csv` export includes the finding assessment, confidence, 
 ## Authentication
 
 All administrative API endpoints require the X-API-Key header.
-The /health endpoint is public.
+The `/health/live` endpoint is a public liveness check and does not depend on PostgreSQL. `/health/ready` is a public readiness check and returns HTTP 503 when PostgreSQL is unavailable. The legacy `/health` endpoint remains an alias for readiness. API request logs are emitted as JSON with a generated request ID, method, path, response status, and duration; query strings, request headers, and bodies are not logged. Uvicorn's duplicate access log is disabled. API and worker logs can be filtered with the `LOG_LEVEL` environment variable.
 
 The API should remain accessible only through localhost and an SSH tunnel
 until a separately reviewed public-access architecture is implemented.
