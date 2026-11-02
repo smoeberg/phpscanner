@@ -93,6 +93,9 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 <h2>Seneste scanninger</h2>
 <p class="muted">Viser de seneste registrerede HTTP-observationer. En PHP-indikation er ikke i sig selv dokumentation for en sårbarhed.</p>
 <div id="scan-results"><p class="muted">Forbind for at hente scanneresultater.</p></div>
+<h3>Scan-jobhistorik</h3>
+<p class="muted">Seneste 50 job, inklusive kørsler der endnu ikke har produceret et scan-resultat.</p>
+<div id="scan-jobs"><p class="muted">Forbind for at hente scan-job.</p></div>
 <div class="row" id="scan-pagination">
 <button class="secondary" id="scan-prev" disabled>Nyere scanninger</button>
 <span id="scan-page" class="muted">Side 1</span>
@@ -170,10 +173,11 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
   }
   async function refresh() {
     try {
-      const [prospectResults, domainResults, scans] = await Promise.all([
+      const [prospectResults, domainResults, scans, scanJobs] = await Promise.all([
         api("/prospects" + listQuery(prospectOffset)),
         api("/domains" + listQuery(domainOffset)),
-        api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)
+        api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset),
+        api("/scan-jobs?limit=50&offset=0")
       ]);
       const hasMoreProspects = prospectResults.length > listPageSize;
       const hasMoreDomains = domainResults.length > listPageSize;
@@ -243,6 +247,21 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
       $("scan-results").replaceChildren(
         scanRows.length ? table(["Tidspunkt","Domæne","HTTP-status","PHP-indikation","Observeret version","Vurdering","Noter","Detaljer"],scanRows)
           : el("p",scanOffset ? "Ingen flere scanninger på denne side." : "Ingen scanninger er registreret endnu.","muted")
+      );
+      const jobRows = scanJobs.map(job => [
+        job.created_at ? new Date(job.created_at).toLocaleString() : "—",
+        job.domain,
+        job.status,
+        job.attempts,
+        job.started_at ? new Date(job.started_at).toLocaleString() : "—",
+        job.finished_at ? new Date(job.finished_at).toLocaleString() : "—",
+        job.scan_id ?? "—",
+        job.error || "—"
+      ]);
+      $("scan-jobs").replaceChildren(
+        jobRows.length
+          ? table(["Oprettet","Domæne","Status","Forsøg","Startet","Afsluttet","Scan-ID","Fejl"], jobRows)
+          : el("p","Der er ingen scan-jobs registreret endnu.","muted")
       );
       $("scan-prev").disabled = scanOffset === 0;
       $("scan-next").disabled = !hasMoreScans;
