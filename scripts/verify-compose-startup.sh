@@ -49,9 +49,9 @@ wait_for_services() {
   for attempt in $(seq 1 60); do
     local services
     services="$(compose ps --format json)"
-    if printf '%s' "$services" | jq -e 'any(.[]; .Service == "db" and .Health == "healthy")' >/dev/null \
-      && printf '%s' "$services" | jq -e 'any(.[]; .Service == "api" and .Health == "healthy")' >/dev/null \
-      && printf '%s' "$services" | jq -e 'any(.[]; .Service == "worker" and .State == "running")' >/dev/null; then
+    if printf '%s' "$services" | jq -s -e 'any(.[]; .Service == "db" and .Health == "healthy")' >/dev/null \
+      && printf '%s' "$services" | jq -s -e 'any(.[]; .Service == "api" and .Health == "healthy")' >/dev/null \
+      && printf '%s' "$services" | jq -s -e 'any(.[]; .Service == "worker" and .State == "running")' >/dev/null; then
       return 0
     fi
     sleep 2
