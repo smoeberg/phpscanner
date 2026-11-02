@@ -488,29 +488,40 @@ def list_prospects(limit: int = 100, offset: int = 0, q: str | None = None):
         if q:
             rows = conn.execute(
                 """
+                WITH selected_prospects AS (
+                    SELECT p.*
+                    FROM prospects AS p
+                    WHERE p.name ILIKE %s
+                       OR COALESCE(p.organization_number, '') ILIKE %s
+                    ORDER BY p.name, p.id
+                    LIMIT %s OFFSET %s
+                )
                 SELECT p.id, p.name, p.organization_number, p.website_url, p.notes,
                        p.created_at, p.updated_at, pd.id, d.id, d.domain,
                        pd.association_status, pd.created_at
-                FROM prospects AS p
+                FROM selected_prospects AS p
                 LEFT JOIN prospect_domains AS pd ON pd.prospect_id = p.id
                 LEFT JOIN domains AS d ON d.id = pd.domain_id
-                WHERE p.name ILIKE %s OR COALESCE(p.organization_number, '') ILIKE %s
                 ORDER BY p.name, p.id, d.domain
-                LIMIT %s OFFSET %s
                 """,
                 (f"%{q[:200]}%", f"%{q[:200]}%", limit, offset),
             ).fetchall()
         else:
             rows = conn.execute(
                 """
+                WITH selected_prospects AS (
+                    SELECT p.*
+                    FROM prospects AS p
+                    ORDER BY p.name, p.id
+                    LIMIT %s OFFSET %s
+                )
                 SELECT p.id, p.name, p.organization_number, p.website_url, p.notes,
                        p.created_at, p.updated_at, pd.id, d.id, d.domain,
                        pd.association_status, pd.created_at
-                FROM prospects AS p
+                FROM selected_prospects AS p
                 LEFT JOIN prospect_domains AS pd ON pd.prospect_id = p.id
                 LEFT JOIN domains AS d ON d.id = pd.domain_id
                 ORDER BY p.name, p.id, d.domain
-                LIMIT %s OFFSET %s
                 """,
                 (limit, offset),
             ).fetchall()
