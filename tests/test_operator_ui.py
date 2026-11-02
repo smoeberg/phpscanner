@@ -66,3 +66,13 @@ def test_operator_home_displays_recent_scan_results_from_authenticated_api():
     assert 'api("/results?limit=100&offset=0")' in response.text
     assert '"PHP-indikation"' in response.text
     assert "En PHP-indikation er ikke i sig selv dokumentation for en sårbarhed." in response.text
+
+
+def test_operator_home_exposes_scan_finding_and_observation_details():
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert 'id="scan-detail"' in response.text
+    assert 'api("/scans/" + scanId + "/findings")' in response.text
+    assert 'api("/scans/" + scanId + "/observations")' in response.text
+    assert 'details.addEventListener("click", () => loadScanDetails(scan.scan_id))' in response.text
