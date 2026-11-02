@@ -185,7 +185,9 @@ def _validate_public_ips(answers) -> list[str]:
         raise RuntimeError("Ingen DNS-adresser")
     for address in ips:
         ip = ipaddress.ip_address(address)
-        if not ip.is_global:
+        # Python's ipaddress considers multicast addresses global in some
+        # versions. They are never valid unicast scan destinations.
+        if not ip.is_global or ip.is_multicast:
             raise RuntimeError("Domænet peger på en ikke-offentlig IP; scanning afvist")
     return ips
 
