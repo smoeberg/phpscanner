@@ -162,6 +162,6 @@ def test_operator_home_displays_persistent_scan_job_history():
     assert response.status_code == 200
     assert 'id="scan-jobs"' in response.text
     assert 'api("/scan-jobs?limit=50&offset=0")' in response.text
-    assert '"Scan-jobhistorik"' in response.text
+    assert "<h3>Scan-jobhistorik</h3>" in response.text
     assert '"Oprettet","Domæne","Status","Forsøg","Startet","Afsluttet","Scan-ID","Fejl"' in response.text
     assert 'jobRows = scanJobs.map(job =>' in response.text
