@@ -1,6 +1,8 @@
 """PostgreSQL integration tests for fail-closed scan authorization."""
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import os
+import threading
 import uuid
 
 import psycopg
@@ -211,3 +213,139 @@ def test_create_authorization_rejects_invalid_date_range(authorization_db, monke
         },
     )
     assert response.status_code == 400
+
+
+
+def test_revocation_waits_for_in_flight_authorized_reservation(authorization_db, monkeypatch):
+    """A reservation that locks authorization first commits before revocation."""
+    _add_target(authorization_db)
+    with authorization_db() as conn:
+        authorization_id = conn.execute(
+            "SELECT id FROM authorization_bases WHERE domain_id = 1"
+        ).fetchone()[0]
+
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(main.app)
+    headers = {"X-API-Key": "test-secret"}
+    authorization_locked = threading.Event()
+    allow_reservation_to_finish = threading.Event()
+    revocation_started = threading.Event()
+
+    class ObservedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, query, *args, **kwargs):
+            normalized = " ".join(query.split()).upper()
+            if "FOR SHARE OF ST, AB" in normalized:
+                result = self.connection.execute(query, *args, **kwargs)
+                authorization_locked.set()
+                if not allow_reservation_to_finish.wait(timeout=10):
+                    raise TimeoutError("test did not release reservation lock")
+                return result
+            if "UPDATE AUTHORIZATION_BASES" in normalized:
+                revocation_started.set()
+            return self.connection.execute(query, *args, **kwargs)
+
+    monkeypatch.setattr(
+        main, "db_connect",
+        lambda: ObservedConnection(authorization_db()),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reservation_future = pool.submit(main.reserve_scan_capacity, 1)
+        assert authorization_locked.wait(timeout=10)
+        revocation_future = pool.submit(
+            client.post,
+            f"/authorizations/{authorization_id}/revoke",
+            headers=headers,
+        )
+        try:
+            assert revocation_started.wait(timeout=10)
+            # The UPDATE has started but must wait for the reservation's
+            # FOR SHARE lock to be released by its transaction commit.
+            assert not revocation_future.done()
+        finally:
+            allow_reservation_to_finish.set()
+
+        reservation = reservation_future.result(timeout=10)
+        response = revocation_future.result(timeout=10)
+
+    assert reservation is not None
+    assert response.status_code == 200
+    main.release_scan_capacity(*reservation)
+    with pytest.raises(main.ScanAuthorizationError):
+        main.reserve_scan_capacity(1)
+
+
+def test_reservation_waits_for_revocation_commit_then_denies_scan(authorization_db, monkeypatch):
+    """A revocation that locks authorization first commits before reservation."""
+    _add_target(authorization_db)
+    with authorization_db() as conn:
+        authorization_id = conn.execute(
+            "SELECT id FROM authorization_bases WHERE domain_id = 1"
+        ).fetchone()[0]
+
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(main.app)
+    headers = {"X-API-Key": "test-secret"}
+    revocation_updated = threading.Event()
+    allow_revocation_to_commit = threading.Event()
+    reservation_query_started = threading.Event()
+
+    class ObservedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, query, *args, **kwargs):
+            normalized = " ".join(query.split()).upper()
+            if "UPDATE AUTHORIZATION_BASES" in normalized:
+                result = self.connection.execute(query, *args, **kwargs)
+                revocation_updated.set()
+                if not allow_revocation_to_commit.wait(timeout=10):
+                    raise TimeoutError("test did not release revocation lock")
+                return result
+            if "FOR SHARE OF ST, AB" in normalized:
+                reservation_query_started.set()
+            return self.connection.execute(query, *args, **kwargs)
+
+    monkeypatch.setattr(
+        main, "db_connect",
+        lambda: ObservedConnection(authorization_db()),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        revocation_future = pool.submit(
+            client.post,
+            f"/authorizations/{authorization_id}/revoke",
+            headers=headers,
+        )
+        assert revocation_updated.wait(timeout=10)
+        reservation_future = pool.submit(main.reserve_scan_capacity, 1)
+        try:
+            assert reservation_query_started.wait(timeout=10)
+            # The reservation's share-locking query cannot pass the
+            # uncommitted revocation update.
+            assert not reservation_future.done()
+        finally:
+            allow_revocation_to_commit.set()
+
+        response = revocation_future.result(timeout=10)
+        with pytest.raises(main.ScanAuthorizationError):
+            reservation_future.result(timeout=10)
+
+    assert response.status_code == 200
