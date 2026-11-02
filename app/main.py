@@ -9,7 +9,6 @@ import secrets
 import socket
 import time
 import uuid
-import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
