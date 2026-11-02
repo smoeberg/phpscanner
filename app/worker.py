@@ -233,18 +233,18 @@ async def process_job(job) -> None:
     except TimeoutError:
         fail_job(job_id, token, "Scan execution deadline exceeded", retry=True)
     except Exception:
-        logger.exception("Scan job %s failed", job_id)
+        logger.exception("scan_job_failed", extra={"event": "scan_job_failed", "job_id": job_id, "attempt": attempts})
         fail_job(job_id, token, "Scan execution failed; see worker logs", retry=True)
     finally:
         if slot is not None:
             try:
                 main.release_scan_capacity(*slot)
             except Exception:
-                logger.exception("Could not release scan capacity for job %s", job_id)
+                logger.exception("scan_capacity_release_failed", extra={"event": "scan_capacity_release_failed", "job_id": job_id})
 
 
 async def run_worker() -> None:
-    logger.info("Persistent scan worker started")
+    logger.info("persistent_scan_worker_started", extra={"event": "worker_started"})
     while True:
         try:
             job = claim_next_job()
@@ -253,10 +253,10 @@ async def run_worker() -> None:
             else:
                 await asyncio.sleep(POLL_SECONDS)
         except (psycopg.Error, OSError):
-            logger.exception("Worker database operation failed")
+            logger.exception("worker_database_operation_failed", extra={"event": "worker_database_error"})
             await asyncio.sleep(POLL_SECONDS)
         except Exception:
-            logger.exception("Unexpected worker loop failure")
+            logger.exception("worker_loop_failed", extra={"event": "worker_loop_error"})
             await asyncio.sleep(POLL_SECONDS)
 
 
