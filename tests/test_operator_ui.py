@@ -37,7 +37,7 @@ def test_operator_domain_input_and_domain_list_have_distinct_ids():
     response = TestClient(app).get("/")
 
     assert response.status_code == 200
-    ids = re.findall(r'\\bid="([^"]+)"', response.text)
+    ids = re.findall(r'\bid="([^"]+)"', response.text)
     duplicates = [element_id for element_id, count in Counter(ids).items() if count > 1]
     assert duplicates == []
     assert 'id="domain-import-input"' in response.text
