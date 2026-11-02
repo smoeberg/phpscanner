@@ -31,7 +31,8 @@ def postgres_reservations(monkeypatch):
             conn.execute("""
                 CREATE TABLE domains (
                     id BIGINT PRIMARY KEY,
-                    domain TEXT NOT NULL UNIQUE
+                    domain TEXT NOT NULL UNIQUE,
+                    verified_at TIMESTAMPTZ DEFAULT now()
                 )
             """)
             conn.execute("""

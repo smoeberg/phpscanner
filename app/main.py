@@ -73,55 +73,6 @@ def db_connect():
     return psycopg.connect(DATABASE_URL)
 
 
-@app.on_event("startup")
-def startup():
-    with db_connect() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS domains (
-                id BIGSERIAL PRIMARY KEY,
-                domain TEXT NOT NULL UNIQUE,
-                source TEXT NOT NULL DEFAULT 'manual',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ")
-        conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verification_token_hash TEXT")
-        conn.execute("ALTER TABLE domains ADD COLUMN IF NOT EXISTS verification_expires_at TIMESTAMPTZ")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS scan_rate_limits (
-                domain_id BIGINT PRIMARY KEY REFERENCES domains(id) ON DELETE CASCADE,
-                last_scan_started_at TIMESTAMPTZ NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS scan_slots (
-                slot_id INTEGER PRIMARY KEY,
-                lease_until TIMESTAMPTZ NOT NULL DEFAULT '-infinity',
-                lease_token TEXT
-            )
-        """)
-        conn.execute("ALTER TABLE scan_slots ADD COLUMN IF NOT EXISTS lease_token TEXT")
-        conn.execute(
-            "INSERT INTO scan_slots(slot_id) SELECT generate_series(1, %s) ON CONFLICT DO NOTHING",
-            (MAX_CONCURRENT_SCANS,),
-        )
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS scans (
-                id BIGSERIAL PRIMARY KEY,
-                domain_id BIGINT NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
-                scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status_code INTEGER,
-                final_url TEXT,
-                server_header TEXT,
-                powered_by TEXT,
-                php_indicator BOOLEAN NOT NULL DEFAULT false,
-                version_observed TEXT,
-                confidence TEXT NOT NULL DEFAULT 'unknown',
-                notes TEXT NOT NULL DEFAULT ''
-            )
-        """)
-
-
 class AuthorizationGrant(BaseModel):
     basis_type: Literal["written_permission", "contract", "other"]
     description: str = Field(default="", max_length=2000)
@@ -729,6 +680,16 @@ def reserve_scan_capacity(domain_id: int) -> tuple[int, str] | None:
     """
     lease_token = secrets.token_urlsafe(32)
     with db_connect() as conn:
+        # Lock the domain row before checking verification. The TXT challenge
+        # endpoint updates this same row when it resets verified_at, so the
+        # verification decision and capacity reservation are serialized.
+        domain = conn.execute(
+            "SELECT verified_at FROM domains WHERE id = %s FOR SHARE",
+            (domain_id,),
+        ).fetchone()
+        if not domain or domain[0] is None:
+            raise ScanAuthorizationError("Domain verification is missing")
+
         authorized = conn.execute(
             """
             SELECT st.id
@@ -747,6 +708,7 @@ def reserve_scan_capacity(domain_id: int) -> tuple[int, str] | None:
         ).fetchone()
         if not authorized:
             raise ScanAuthorizationError("No active authorization for this scan target")
+
 
         slot = conn.execute(
             """
@@ -801,6 +763,14 @@ def release_scan_capacity(slot_id: int, lease_token: str) -> None:
 def enqueue_scan_job(domain_id: int) -> int:
     """Persist a scan request only when a current authorization covers the domain."""
     with db_connect() as conn:
+        # Keep enqueue-time verification atomic with challenge invalidation.
+        domain = conn.execute(
+            "SELECT verified_at FROM domains WHERE id = %s FOR SHARE",
+            (domain_id,),
+        ).fetchone()
+        if not domain or domain[0] is None:
+            raise ScanAuthorizationError("Domain verification is missing")
+
         authorized = conn.execute(
             """
             SELECT st.id
@@ -819,6 +789,7 @@ def enqueue_scan_job(domain_id: int) -> int:
         ).fetchone()
         if not authorized:
             raise ScanAuthorizationError("No active authorization for this scan target")
+
         row = conn.execute(
             """
             INSERT INTO scan_jobs(domain_id, status)

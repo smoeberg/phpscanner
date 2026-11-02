@@ -15,7 +15,6 @@ from test_scan_capacity_postgres import postgres_reservations
 def lifecycle_database(postgres_reservations):
     connect = postgres_reservations
     with connect() as conn:
-        conn.execute("ALTER TABLE domains ADD COLUMN verified_at TIMESTAMPTZ")
         conn.execute("UPDATE domains SET verified_at = now()")
         conn.execute(
             """
