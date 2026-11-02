@@ -260,6 +260,24 @@ def test_operator_can_create_list_prospects_and_associate_domains(
     assert repeated.status_code == 200
     assert repeated.json()["association_id"] == association["association_id"]
 
+    second_import = client.post(
+        "/domains/import",
+        headers=headers,
+        json={"domains": ["second.example"], "source": "prospect-test"},
+    )
+    assert second_import.status_code == 200
+    second_domain_id = next(
+        item["id"] for item in client.get("/domains", headers=headers).json()
+        if item["domain"] == "second.example"
+    )
+    second_association = client.post(
+        f"/prospects/{prospect['id']}/domains",
+        headers=headers,
+        json={"domain_id": second_domain_id},
+    )
+    assert second_association.status_code == 200
+    assert second_association.json()["association_status"] == "unverified"
+
     # Prospect association and DNS control do not grant scan authorization.
     with operator_workflow_db() as conn:
         conn.execute(
@@ -274,13 +292,14 @@ def test_operator_can_create_list_prospects_and_associate_domains(
     assert len(listed.json()) == 1
     listed_prospect = listed.json()[0]
     assert listed_prospect["id"] == prospect["id"]
-    assert listed_prospect["domains"] == [{
-        "association_id": association["association_id"],
-        "domain_id": domain_id,
-        "domain": "example.com",
-        "association_status": "unverified",
-        "associated_at": association["associated_at"],
-    }]
+    assert [item["domain"] for item in listed_prospect["domains"]] == [
+        "example.com", "second.example"
+    ]
+    assert all(
+        item["association_status"] == "unverified"
+        for item in listed_prospect["domains"]
+    )
+    assert client.get("/prospects?limit=1", headers=headers).json()[0]["domains"] == listed_prospect["domains"]
 
     filtered = client.get("/prospects?q=12345678", headers=headers)
     assert filtered.status_code == 200
