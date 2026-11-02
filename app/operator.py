@@ -266,7 +266,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
       $("scan-prev").disabled = scanOffset === 0;
       $("scan-next").disabled = !hasMoreScans;
       $("scan-page").textContent = "Side " + (Math.floor(scanOffset / scanPageSize) + 1);
-      message("Data opdateret. "+prospects.length+" prospects, "+domains.length+" domæner og "+visibleScans.length+" scanninger hentet.");
+      message("Data opdateret. "+prospects.length+" prospects, "+domains.length+" domæner, "+visibleScans.length+" scanninger og "+scanJobs.length+" scan-jobs hentet.");
     } catch(e) { message(e.message); }
   }
   async function loadScanDetails(scanId) {
