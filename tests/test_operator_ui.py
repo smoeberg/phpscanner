@@ -124,7 +124,32 @@ def test_operator_lists_support_authenticated_search_filter():
     assert response.status_code == 200
     assert 'id="list-search"' in response.text
     assert 'id="search-lists"' in response.text
-    assert 'api("/prospects" + listSearch())' in response.text
-    assert 'api("/domains" + listSearch())' in response.text
-    assert 'encodeURIComponent(query)' in response.text
+    assert 'api("/prospects" + listQuery(prospectOffset))' in response.text
+    assert 'api("/domains" + listQuery(domainOffset))' in response.text
+    assert 'params.set("q", query)' in response.text
+    assert 'params.set("limit", String(listPageSize + 1))' in response.text
+    assert 'params.set("offset", String(offset))' in response.text
     assert '$("list-search").addEventListener("keydown"' in response.text
+
+
+def test_operator_prospect_and_domain_lists_have_independent_offset_pagination():
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert 'id="prospect-prev"' in response.text
+    assert 'id="prospect-next"' in response.text
+    assert 'id="prospect-page"' in response.text
+    assert 'id="domain-prev"' in response.text
+    assert 'id="domain-next"' in response.text
+    assert 'id="domain-page"' in response.text
+    assert 'let prospectOffset = 0;' in response.text
+    assert 'let domainOffset = 0;' in response.text
+    assert 'const listPageSize = 50;' in response.text
+    assert 'api("/prospects" + listQuery(prospectOffset))' in response.text
+    assert 'api("/domains" + listQuery(domainOffset))' in response.text
+    assert 'const hasMoreProspects = prospectResults.length > listPageSize;' in response.text
+    assert 'const hasMoreDomains = domainResults.length > listPageSize;' in response.text
+    assert 'prospectOffset+=listPageSize' in response.text
+    assert 'domainOffset+=listPageSize' in response.text
+    assert 'prospectOffset = 0;' in response.text
+    assert 'domainOffset = 0;' in response.text

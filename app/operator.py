@@ -71,12 +71,22 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 </div>
 <div class="row"><div><label for="list-search">Søg i prospects og domæner</label><input id="list-search" type="search" maxlength="253" placeholder="Navn, organisationsnummer eller domæne"></div><button class="secondary" id="search-lists">Søg</button><button class="secondary" id="refresh">Opdater oversigt</button></div>
 <div id="prospects"></div>
+<div class="row" id="prospect-pagination">
+<button class="secondary" id="prospect-prev" disabled>Forrige prospects</button>
+<span id="prospect-page" class="muted">Side 1</span>
+<button class="secondary" id="prospect-next" disabled>Næste prospects</button>
+</div>
 </section>
 
 <section class="panel">
 <h2>Domæner og scanning</h2>
 <p class="muted">DNS TXT-verifikation dokumenterer domænekontrol, ikke scanningstilladelse. Opret først et separat autorisationsgrundlag med dokumentationsreference.</p>
 <div id="domain-list"></div>
+<div class="row" id="domain-pagination">
+<button class="secondary" id="domain-prev" disabled>Forrige domæner</button>
+<span id="domain-page" class="muted">Side 1</span>
+<button class="secondary" id="domain-next" disabled>Næste domæner</button>
+</div>
 </section>
 
 <section class="panel">
@@ -119,11 +129,18 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 (() => {
   let apiKey = "";
   let scanOffset = 0;
+  let prospectOffset = 0;
+  let domainOffset = 0;
   const scanPageSize = 100;
+  const listPageSize = 50;
   const $ = (id) => document.getElementById(id);
-  const listSearch = () => {
+  const listQuery = (offset) => {
+    const params = new URLSearchParams();
     const query = $("list-search").value.trim();
-    return query ? "?q=" + encodeURIComponent(query) : "";
+    if (query) params.set("q", query);
+    params.set("limit", String(listPageSize + 1));
+    params.set("offset", String(offset));
+    return "?" + params.toString();
   };
   const message = (text) => { $("message").textContent = text; };
   const el = (tag, text, className) => {
@@ -153,14 +170,23 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
   }
   async function refresh() {
     try {
-      const [prospects, domains, scans] = await Promise.all([
-        api("/prospects" + listSearch()), api("/domains" + listSearch()), api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)
+      const [prospectResults, domainResults, scans] = await Promise.all([
+        api("/prospects" + listQuery(prospectOffset)),
+        api("/domains" + listQuery(domainOffset)),
+        api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)
       ]);
+      const hasMoreProspects = prospectResults.length > listPageSize;
+      const hasMoreDomains = domainResults.length > listPageSize;
+      const prospects = prospectResults.slice(0, listPageSize);
+      const domains = domainResults.slice(0, listPageSize);
       const pRows = prospects.map(p => [
         p.id, p.name, p.organization_number || "—",
         p.domains.map(d => d.domain + " (" + d.association_status + ")").join(", ") || "Ingen domæner"
       ]);
       $("prospects").replaceChildren(table(["ID","Prospect","Org.nr.","Tilknyttede domæner"], pRows));
+      $("prospect-prev").disabled = prospectOffset === 0;
+      $("prospect-next").disabled = !hasMoreProspects;
+      $("prospect-page").textContent = "Side " + (Math.floor(prospectOffset / listPageSize) + 1);
       const dRows = await Promise.all(domains.map(async d => {
         const authorizations = await api("/domains/" + d.id + "/authorizations");
         const currentlyAuthorized = authorizations.some(a => a.currently_authorized);
@@ -192,6 +218,9 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
         ];
       }));
       $("domain-list").replaceChildren(table(["ID","Domæne","DNS-status","Scanningstilladelse","Handlinger"],dRows));
+      $("domain-prev").disabled = domainOffset === 0;
+      $("domain-next").disabled = !hasMoreDomains;
+      $("domain-page").textContent = "Side " + (Math.floor(domainOffset / listPageSize) + 1);
       const hasMoreScans = scans.length > scanPageSize;
       const visibleScans = scans.slice(0, scanPageSize);
       const scanRows = visibleScans.map(scan => {
@@ -298,9 +327,30 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
     try{await refresh();}catch(e){apiKey="";message(e.message);}
   });
   $("refresh").addEventListener("click",refresh);
-  $("search-lists").addEventListener("click",refresh);
+  const searchLists = () => {
+    prospectOffset = 0;
+    domainOffset = 0;
+    refresh();
+  };
+  $("search-lists").addEventListener("click",searchLists);
   $("list-search").addEventListener("keydown",event=>{
-    if(event.key==="Enter"){event.preventDefault();refresh();}
+    if(event.key==="Enter"){event.preventDefault();searchLists();}
+  });
+  $("prospect-prev").addEventListener("click",async()=>{
+    prospectOffset=Math.max(0,prospectOffset-listPageSize);
+    await refresh();
+  });
+  $("prospect-next").addEventListener("click",async()=>{
+    prospectOffset+=listPageSize;
+    await refresh();
+  });
+  $("domain-prev").addEventListener("click",async()=>{
+    domainOffset=Math.max(0,domainOffset-listPageSize);
+    await refresh();
+  });
+  $("domain-next").addEventListener("click",async()=>{
+    domainOffset+=listPageSize;
+    await refresh();
   });
   $("scan-prev").addEventListener("click",async()=>{
     scanOffset=Math.max(0,scanOffset-scanPageSize);
