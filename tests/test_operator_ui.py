@@ -110,7 +110,8 @@ def test_operator_scan_history_has_offset_pagination_controls():
     assert 'id="scan-next"' in response.text
     assert 'id="scan-page"' in response.text
     assert 'let scanOffset = 0;' in response.text
-    assert 'api("/results?limit=" + scanPageSize + "&offset=" + scanOffset)' in response.text
-    assert 'scans.length < scanPageSize' in response.text
+    assert 'api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)' in response.text
+    assert 'const hasMoreScans = scans.length > scanPageSize;' in response.text
+    assert '$("scan-next").disabled = !hasMoreScans;' in response.text
     assert 'scanOffset=Math.max(0,scanOffset-scanPageSize)' in response.text
     assert 'scanOffset+=scanPageSize' in response.text
