@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 from app.observability import configure_logger
+from app.operator import router as operator_router
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 API_KEY = os.getenv("SCANNER_API_KEY", "")
@@ -30,6 +31,7 @@ SCAN_COOLDOWN_SECONDS = 60
 SCAN_SLOT_LEASE_SECONDS = 90
 SCAN_EXECUTION_DEADLINE_SECONDS = 60
 app = FastAPI(title="DK PHP Exposure Scanner", version="0.1.0")
+app.include_router(operator_router)
 logger = configure_logger("scanner.api")
 
 

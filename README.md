@@ -103,6 +103,20 @@ The existing `/results.csv` export includes the finding assessment, confidence, 
 - A job waits in the queue when no capacity slot or domain cooldown is available.
 - Each probe has a strict 60-second deadline, leaving a 30-second lease safety margin.
 
+## Operator interface
+
+Open `http://127.0.0.1:8787/` through the documented SSH tunnel to use the
+minimal single-operator browser interface. Enter the `SCANNER_API_KEY` when
+prompted; the page keeps it in browser memory only and sends it as
+`X-API-Key` for protected API requests. It is not stored in browser storage.
+
+The interface supports prospect creation, domain import and association,
+DNS TXT challenge/verification, authorization grant/list/revocation and
+scan-target enable/disable, plus manual scan submission and job-status polling.
+A domain association or DNS TXT verification is not scan permission. The API
+continues to enforce a current authorization basis for the exact domain before
+a scan job can be queued.
+
 ## Authentication
 
 All administrative API endpoints require the X-API-Key header.
@@ -148,7 +162,6 @@ This is an MVP, not a production-ready national scanning platform.
 
 Not yet implemented:
 
-- A browser-based operator interface for authorization management
 - Scheduled/recurring scans
 - Authoritative PHP/vendor advisory database
 - CVE and distribution-specific package assessment
