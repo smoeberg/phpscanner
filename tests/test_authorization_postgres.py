@@ -31,7 +31,8 @@ def authorization_db(monkeypatch):
             conn.execute("""
                 CREATE TABLE domains (
                     id BIGINT PRIMARY KEY,
-                    domain TEXT NOT NULL UNIQUE
+                    domain TEXT NOT NULL UNIQUE,
+                    verified_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
             """)
             conn.execute("""
@@ -374,3 +375,108 @@ def test_reservation_waits_for_revocation_commit_then_denies_scan(authorization_
             reservation_future.result(timeout=10)
 
     assert response.status_code == 200
+
+
+def test_scan_reservation_requires_verified_domain(authorization_db):
+    _add_target(authorization_db)
+    with authorization_db() as conn:
+        conn.execute("UPDATE domains SET verified_at = NULL WHERE id = 1")
+    with pytest.raises(main.ScanAuthorizationError, match="verification"):
+        main.reserve_scan_capacity(1)
+
+
+def test_verification_reset_serializes_before_scan_reservation(authorization_db, monkeypatch):
+    """A challenge reset that locks the domain first must deny the reservation."""
+    _add_target(authorization_db)
+    reset_updated = threading.Event()
+    allow_reset_commit = threading.Event()
+    reservation_query_started = threading.Event()
+    reservation_pid = []
+
+    def reset_verification():
+        with authorization_db() as conn:
+            conn.execute("UPDATE domains SET verified_at = NULL WHERE id = 1")
+            reset_updated.set()
+            if not allow_reset_commit.wait(timeout=10):
+                raise TimeoutError("test did not release verification reset")
+
+    class ObservedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.backend_pid = connection.execute("SELECT pg_backend_pid()").fetchone()[0]
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+        def execute(self, query, *args, **kwargs):
+            if "select verified_at from domains" in " ".join(query.split()).lower():
+                reservation_pid.append(self.backend_pid)
+                reservation_query_started.set()
+            return self.connection.execute(query, *args, **kwargs)
+
+    monkeypatch.setattr(main, "db_connect", lambda: ObservedConnection(authorization_db()))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reset_future = pool.submit(reset_verification)
+        assert reset_updated.wait(timeout=10)
+        reservation_future = pool.submit(main.reserve_scan_capacity, 1)
+        try:
+            assert reservation_query_started.wait(timeout=10)
+            _assert_backend_waits_on_lock(authorization_db, reservation_pid[0])
+            assert not reservation_future.done()
+        finally:
+            allow_reset_commit.set()
+        reset_future.result(timeout=10)
+        with pytest.raises(main.ScanAuthorizationError, match="verification"):
+            reservation_future.result(timeout=10)
+
+
+def test_scan_reservation_serializes_before_verification_reset(authorization_db, monkeypatch):
+    """A reservation holding the domain row commits before challenge invalidation."""
+    _add_target(authorization_db)
+    domain_locked = threading.Event()
+    allow_reservation_commit = threading.Event()
+    challenge_started = threading.Event()
+    challenge_pid = []
+
+    class ObservedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.backend_pid = connection.execute("SELECT pg_backend_pid()").fetchone()[0]
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+        def execute(self, query, *args, **kwargs):
+            result = self.connection.execute(query, *args, **kwargs)
+            if "select verified_at from domains" in " ".join(query.split()).lower():
+                domain_locked.set()
+                if not allow_reservation_commit.wait(timeout=10):
+                    raise TimeoutError("test did not release reservation lock")
+            return result
+
+    monkeypatch.setattr(main, "db_connect", lambda: ObservedConnection(authorization_db()))
+    def reset_verification():
+        with authorization_db() as conn:
+            challenge_pid.append(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            challenge_started.set()
+            conn.execute("UPDATE domains SET verified_at = NULL WHERE id = 1")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reservation_future = pool.submit(main.reserve_scan_capacity, 1)
+        assert domain_locked.wait(timeout=10)
+        challenge_future = pool.submit(reset_verification)
+        try:
+            assert challenge_started.wait(timeout=10)
+            _assert_backend_waits_on_lock(authorization_db, challenge_pid[0])
+            assert not challenge_future.done()
+        finally:
+            allow_reservation_commit.set()
+        reservation = reservation_future.result(timeout=10)
+        challenge_future.result(timeout=10)
+
+    assert reservation is not None
+    main.release_scan_capacity(*reservation)
+    with authorization_db() as conn:
+        assert conn.execute("SELECT verified_at FROM domains WHERE id = 1").fetchone()[0] is None
