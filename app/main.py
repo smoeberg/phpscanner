@@ -395,6 +395,8 @@ def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
 
 @app.post("/domains/{domain_id}/authorizations", dependencies=[Depends(require_api_key)])
 def create_authorization(domain_id: int, payload: AuthorizationGrant):
+    if not payload.evidence_reference.strip() or not payload.granted_by.strip():
+        raise HTTPException(400, "evidence_reference og granted_by skal indeholde tekst")
     if payload.valid_from.tzinfo is None or payload.valid_from.utcoffset() is None:
         raise HTTPException(400, "valid_from skal indeholde tidszone")
     if payload.valid_until is not None:
