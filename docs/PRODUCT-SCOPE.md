@@ -43,8 +43,8 @@ A domain being imported or verified must not automatically become authorized for
 1. **Foundation and data migration:** introduce versioned database migrations and add the minimal prospect/domain/authorization/target data model without deleting or guessing relationships for existing `domains` and `scans`.
 2. **Authorization enforcement:** make scan initiation require a valid authorization basis for the exact target and scope; add negative tests.
 3. **Persistent scan jobs:** separate API submission from execution; implement worker lifecycle, capacity control, retries, timeout, and recovery. (Implemented in B4.4.)
-4. **Observations and findings:** persist structured evidence and derive findings with explicit confidence and rationale.
-5. **CSV export:** produce stable, documented columns suitable for sales and preserve formula-injection protection.
+4. **Observations and findings:** persist structured evidence and derive findings with explicit confidence and rationale. (Raw observations implemented in B4.5 first part; conservative derived findings implemented in B4.5 second part.)
+5. **CSV export:** produce stable, documented columns suitable for sales and preserve formula-injection protection. (Finding fields are included in the existing CSV export.)
 6. **Operational hardening:** migrations in deployment, logging, health/readiness, backups, dependency/container review, and security/integration tests.
 
 ## Acceptance principles
