@@ -32,3 +32,7 @@ Historical scans intentionally remain associated only with their existing `domai
 ## Persistent scan jobs
 
 Revision `0002_scan_jobs` adds a durable queue without rewriting historical scan rows. Scan submissions create a queued job; a separate worker claims it with `FOR UPDATE SKIP LOCKED`, an expiring lease, and a fencing token. Expired running jobs can be reclaimed after a worker crash. A scan result is linked to its job with a unique nullable `scans.job_id`; existing scans retain NULL and remain unchanged. The worker rechecks domain verification and the current authorization before each execution. Failed transient attempts are bounded, and successful result persistence is idempotent per job.
+
+## Structured scan observations
+
+Revision `0003_scan_observations` adds a child table for raw HTTP response observations. Each scan may store its response status, `Server` header, and `X-Powered-By` header independently, with a source identifier and observation timestamp. The unique scan/type constraint makes worker retries idempotent. Existing scan rows are preserved and receive no inferred observations. Response bodies are not stored.
