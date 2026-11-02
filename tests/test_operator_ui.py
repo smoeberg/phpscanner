@@ -56,3 +56,13 @@ def test_operator_home_exposes_authenticated_csv_download():
     assert 'link.download = "dk-php-scanner-results.csv"' in response.text
     assert "localStorage" not in response.text
     assert "sessionStorage" not in response.text
+
+
+def test_operator_home_displays_recent_scan_results_from_authenticated_api():
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert 'id="scan-results"' in response.text
+    assert 'api("/results?limit=100&offset=0")' in response.text
+    assert '"PHP-indikation"' in response.text
+    assert "En PHP-indikation er ikke i sig selv dokumentation for en sårbarhed." in response.text
