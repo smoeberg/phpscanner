@@ -131,6 +131,28 @@ def persist_result(job_id: int, domain_id: int, token: str, result: dict) -> Non
             if not existing:
                 raise RuntimeError("Scan result could not be reconciled")
             scan_id = existing[0]
+
+        # Persist only bounded response metadata as raw observations. Response
+        # bodies are deliberately discarded by the probe and are never stored.
+        observations = (
+            ("http_status", result.get("status_code"), "http.response.status"),
+            ("server_header", result.get("server_header"), "http.response.header.server"),
+            ("x_powered_by", result.get("powered_by"), "http.response.header.x-powered-by"),
+        )
+        for observation_type, observed_value, source in observations:
+            if observed_value is None or observed_value == "":
+                continue
+            conn.execute(
+                """
+                INSERT INTO scan_observations(
+                    scan_id, observation_type, observed_value, source
+                )
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (scan_id, observation_type) DO NOTHING
+                """,
+                (scan_id, observation_type, str(observed_value), source),
+            )
+
         updated = conn.execute(
             """
             UPDATE scan_jobs

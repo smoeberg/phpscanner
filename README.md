@@ -72,6 +72,8 @@ curl -X POST http://127.0.0.1:8787/domains/1/authorizations \
 
 The worker runs separately from the API, claims jobs with PostgreSQL row locking, and uses expiring leases and fencing tokens. A worker crash leaves a recoverable job; transient execution failures are retried up to three attempts. Result persistence is idempotent per job, so recovery does not create duplicate scan rows. The worker rechecks domain verification and authorization immediately before execution. If no capacity slot is available, the job is returned to the queue without consuming an attempt.
 
+Each completed scan also stores the raw HTTP response status, `Server` header, and `X-Powered-By` header as separate observations linked to the scan. Retrieve them with the API-key-protected `GET /scans/{scan_id}/observations` endpoint. Response bodies are discarded and are not persisted. These observations are evidence only; they do not by themselves establish a vulnerability or CVE.
+
 ## Scan rate limits
 
 - At most 4 scans may hold a global database-backed capacity slot at once.
