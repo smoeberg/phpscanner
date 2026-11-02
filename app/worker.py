@@ -86,8 +86,10 @@ def fail_job(job_id: int, token: str, message: str, *, retry: bool) -> None:
             """
             UPDATE scan_jobs
             SET status = CASE WHEN %s AND attempts < %s THEN 'queued' ELSE 'failed' END,
-                available_at = CASE WHEN %s AND attempts < %s
-                    THEN now() + LEAST(60, 5 * power(2, GREATEST(attempts - 1, 0))) * interval '1 second'
+                available_at = CASE
+                    WHEN %s AND attempts < %s AND attempts = 1 THEN now() + interval '5 seconds'
+                    WHEN %s AND attempts < %s AND attempts = 2 THEN now() + interval '10 seconds'
+                    WHEN %s AND attempts < %s THEN now() + interval '20 seconds'
                     ELSE available_at END,
                 finished_at = CASE WHEN %s AND attempts < %s THEN NULL ELSE now() END,
                 lease_until = NULL, lease_token = NULL, last_error = %s,
@@ -95,6 +97,7 @@ def fail_job(job_id: int, token: str, message: str, *, retry: bool) -> None:
             WHERE id = %s AND status = 'running' AND lease_token = %s
             """,
             (retry, MAX_ATTEMPTS, retry, MAX_ATTEMPTS, retry, MAX_ATTEMPTS,
+             retry, MAX_ATTEMPTS, retry, MAX_ATTEMPTS,
              message[:500], job_id, token),
         )
 
