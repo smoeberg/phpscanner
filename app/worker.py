@@ -17,9 +17,9 @@ import json
 
 from app import main
 from app.findings import derive_findings
+from app.observability import configure_logger
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-logger = logging.getLogger("scanner.worker")
+logger = configure_logger("scanner.worker")
 
 POLL_SECONDS = float(os.getenv("SCAN_WORKER_POLL_SECONDS", "2"))
 JOB_LEASE_SECONDS = 90
