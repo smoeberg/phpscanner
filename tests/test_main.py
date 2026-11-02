@@ -770,94 +770,96 @@ def test_pinned_backend_rejects_unexpected_hostname():
 from datetime import datetime, timezone
 
 
-@pytest.mark.parametrize("reservation", [None])
-def test_scan_returns_rate_limit_when_capacity_or_cooldown_denies(monkeypatch, reservation):
+def test_scan_returns_accepted_job_without_running_probe(monkeypatch):
+    from datetime import datetime, timezone
+
     class FakeConnection:
+        def __init__(self): self.query = ""
         def __enter__(self): return self
         def __exit__(self, *_args): return False
-        def execute(self, _query, _params): return self
-        def fetchone(self): return (7, "example.com", datetime.now(timezone.utc))
+        def execute(self, query, _params):
+            self.query = query
+            return self
+        def fetchone(self):
+            if "SELECT id, domain, verified_at" in self.query:
+                return (7, "example.com", datetime.now(timezone.utc))
+            if "SELECT st.id" in self.query:
+                return (11,)
+            if "INSERT INTO scan_jobs" in self.query:
+                return (55,)
+            raise AssertionError(self.query)
 
     monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
-    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: reservation)
     monkeypatch.setattr(main, "API_KEY", "test-secret")
     response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
-    assert response.status_code == 429
-    assert response.json()["detail"] == "Scanning er midlertidigt begrænset; prøv igen senere"
+    assert response.status_code == 202
+    assert response.json()["job_id"] == 55
+    assert response.json()["status"] == "queued"
 
 
-def test_scan_fails_closed_when_capacity_database_fails(monkeypatch):
+def test_scan_enqueue_rejects_missing_authorization(monkeypatch):
+    from datetime import datetime, timezone
+
     class FakeConnection:
+        def __init__(self): self.query = ""
         def __enter__(self): return self
         def __exit__(self, *_args): return False
-        def execute(self, _query, _params): return self
-        def fetchone(self): return (7, "example.com", datetime.now(timezone.utc))
-
-    def fail_reservation(_domain_id):
-        raise RuntimeError("database internals must not leak")
+        def execute(self, query, _params):
+            self.query = query
+            return self
+        def fetchone(self):
+            if "SELECT id, domain, verified_at" in self.query:
+                return (7, "example.com", datetime.now(timezone.utc))
+            if "SELECT st.id" in self.query:
+                return None
+            raise AssertionError(self.query)
 
     monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
-    monkeypatch.setattr(main, "reserve_scan_capacity", fail_reservation)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 403
+    assert "autorisationsgrundlag" in response.json()["detail"]
+
+
+def test_scan_enqueue_fails_closed_on_database_error(monkeypatch):
+    from datetime import datetime, timezone
+
+    class FakeConnection:
+        def __init__(self): self.query = ""
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, _params):
+            self.query = query
+            return self
+        def fetchone(self):
+            if "SELECT id, domain, verified_at" in self.query:
+                return (7, "example.com", datetime.now(timezone.utc))
+            raise RuntimeError("database internals must not leak")
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
     monkeypatch.setattr(main, "API_KEY", "test-secret")
     response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
     assert response.status_code == 503
     assert "database internals" not in response.text
 
 
-def test_scan_releases_reserved_slot_after_probe(monkeypatch):
-    class FakeConnection:
-        def __enter__(self): return self
-        def __exit__(self, *_args): return False
-        def execute(self, query, params):
-            self.query = query
-            return self
-        def fetchone(self):
-            if "SELECT id, domain, verified_at" in self.query:
-                return (7, "example.com", datetime.now(timezone.utc))
-            return (42, datetime.now(timezone.utc))
+def test_scan_job_status_is_api_key_protected_and_inspectable(monkeypatch):
+    from datetime import datetime, timezone
 
-    released = []
-    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
-    monkeypatch.setattr(main, "reserve_scan_capacity", lambda _domain_id: (3, "test-lease-token"))
-    monkeypatch.setattr(main, "release_scan_capacity", lambda slot, token: released.append((slot, token)))
-    async def fake_probe(_domain):
-        return {"status_code": 200, "final_url": "https://example.com/", "server_header": "",
-                "powered_by": "", "php_indicator": False, "version_observed": None,
-                "confidence": "unknown", "notes": "test"}
-    monkeypatch.setattr(main, "probe", fake_probe)
-    monkeypatch.setattr(main, "API_KEY", "test-secret")
-    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
-    assert response.status_code == 200
-    assert released == [(3, "test-lease-token")]
-
-
-
-def test_scan_rejects_missing_authorization_without_starting_probe(monkeypatch):
     class FakeConnection:
         def __enter__(self): return self
         def __exit__(self, *_args): return False
         def execute(self, _query, _params): return self
-        def fetchone(self): return (7, "example.com", datetime.now(timezone.utc))
-
-    probe_calls = []
-
-    def reject_authorization(_domain_id):
-        raise main.ScanAuthorizationError("no authorization")
-
-    async def fake_probe(domain):
-        probe_calls.append(domain)
-        raise AssertionError("probe must not run without authorization")
+        def fetchone(self):
+            now = datetime.now(timezone.utc)
+            return (55, 7, "example.com", "succeeded", 1, now, now, now, 42, None)
 
     monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
-    monkeypatch.setattr(main, "reserve_scan_capacity", reject_authorization)
-    monkeypatch.setattr(main, "probe", fake_probe)
     monkeypatch.setattr(main, "API_KEY", "test-secret")
-
-    response = TestClient(app).post(
-        "/domains/7/scan",
-        headers={"X-API-Key": "test-secret"},
-    )
-
-    assert response.status_code == 403
-    assert "autorisationsgrundlag" in response.json()["detail"]
-    assert probe_calls == []
+    client = TestClient(app)
+    denied = client.get("/scan-jobs/55")
+    assert denied.status_code == 401
+    response = client.get("/scan-jobs/55", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert response.json()["scan_id"] == 42
