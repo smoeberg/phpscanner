@@ -62,6 +62,7 @@ def test_migration_creates_fresh_schema(migration_database):
             "prospect_domains",
             "authorization_bases",
             "scan_targets",
+            "scan_jobs",
             "alembic_version",
         } <= tables
         assert conn.execute("SELECT count(*) FROM scan_slots").fetchone()[0] == 4
