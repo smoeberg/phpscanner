@@ -7,7 +7,6 @@ claims are recoverable after a worker crash.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import secrets
 
