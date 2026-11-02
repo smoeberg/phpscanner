@@ -605,41 +605,87 @@ def release_scan_capacity(slot_id: int, lease_token: str) -> None:
         )
 
 
-@app.post("/domains/{domain_id}/scan", dependencies=[Depends(require_api_key)])
-async def scan_domain(domain_id: int):
+def enqueue_scan_job(domain_id: int) -> int:
+    """Persist a scan request only when a current authorization covers the domain."""
     with db_connect() as conn:
-        row = conn.execute("SELECT id, domain, verified_at FROM domains WHERE id=%s", (domain_id,)).fetchone()
+        authorized = conn.execute(
+            """
+            SELECT st.id
+            FROM scan_targets AS st
+            JOIN authorization_bases AS ab
+              ON ab.id = st.authorization_basis_id
+             AND ab.domain_id = st.domain_id
+            WHERE st.domain_id = %s
+              AND st.status = 'active'
+              AND ab.revoked_at IS NULL
+              AND ab.valid_from <= now()
+              AND (ab.valid_until IS NULL OR ab.valid_until > now())
+            FOR SHARE OF st, ab
+            """,
+            (domain_id,),
+        ).fetchone()
+        if not authorized:
+            raise ScanAuthorizationError("No active authorization for this scan target")
+        row = conn.execute(
+            """
+            INSERT INTO scan_jobs(domain_id, status)
+            VALUES (%s, 'queued')
+            RETURNING id, created_at
+            """,
+            (domain_id,),
+        ).fetchone()
+    return row[0]
+
+
+@app.post("/domains/{domain_id}/scan", status_code=202, dependencies=[Depends(require_api_key)])
+def scan_domain(domain_id: int):
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT id, domain, verified_at FROM domains WHERE id=%s",
+            (domain_id,),
+        ).fetchone()
     if not row:
         raise HTTPException(404, "Domæne ikke fundet")
     if row[2] is None:
         raise HTTPException(403, "Domænet skal verificeres før scanning")
     try:
-        reservation = reserve_scan_capacity(row[0])
+        job_id = enqueue_scan_job(domain_id)
     except ScanAuthorizationError:
         raise HTTPException(403, "Scanning kræver et gyldigt, aktivt autorisationsgrundlag")
     except Exception:
-        raise HTTPException(503, "Scan-kapacitet kunne ikke reserveres")
-    if reservation is None:
-        raise HTTPException(429, "Scanning er midlertidigt begrænset; prøv igen senere")
-    slot_id, lease_token = reservation
-    try:
-        async with asyncio.timeout(SCAN_EXECUTION_DEADLINE_SECONDS):
-            result = await probe(row[1])
-    except TimeoutError:
-        raise HTTPException(504, "Scanningen overskred den maksimale køretid")
-    finally:
-        try:
-            release_scan_capacity(slot_id, lease_token)
-        except Exception:
-            # The lease expires automatically; never expose database details.
-            pass
+        raise HTTPException(503, "Scan-jobbet kunne ikke oprettes")
+    return {
+        "job_id": job_id,
+        "domain_id": domain_id,
+        "domain": row[1],
+        "status": "queued",
+        "status_url": f"/scan-jobs/{job_id}",
+    }
+
+
+@app.get("/scan-jobs/{job_id}", dependencies=[Depends(require_api_key)])
+def get_scan_job(job_id: int):
     with db_connect() as conn:
-        saved = conn.execute("""
-            INSERT INTO scans(domain_id,status_code,final_url,server_header,powered_by,php_indicator,version_observed,confidence,notes)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            RETURNING id, scanned_at
-        """, (row[0], result["status_code"], result["final_url"], result["server_header"], result["powered_by"], result["php_indicator"], result["version_observed"], result["confidence"], result["notes"])).fetchone()
-    return {"scan_id": saved[0], "domain": row[1], "scanned_at": saved[1].isoformat(), **result}
+        row = conn.execute(
+            """
+            SELECT j.id, j.domain_id, d.domain, j.status, j.attempts,
+                   j.created_at, j.started_at, j.finished_at, j.scan_id, j.last_error
+            FROM scan_jobs AS j
+            JOIN domains AS d ON d.id = j.domain_id
+            WHERE j.id = %s
+            """,
+            (job_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Scan-job ikke fundet")
+    return {
+        "job_id": row[0], "domain_id": row[1], "domain": row[2],
+        "status": row[3], "attempts": row[4],
+        "created_at": row[5].isoformat(),
+        "started_at": row[6].isoformat() if row[6] else None,
+        "finished_at": row[7].isoformat() if row[7] else None,
+        "scan_id": row[8], "error": row[9],
+    }
 
 
 @app.get("/results", dependencies=[Depends(require_api_key)])
