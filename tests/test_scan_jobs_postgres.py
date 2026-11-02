@@ -162,3 +162,65 @@ def test_persist_result_completes_job_and_links_scan_once(postgres_jobs):
     assert len(scans) == 1
     assert scans[0][1] == job_id
     assert scans[0][2] == "bounded observation"
+
+
+@pytest.mark.parametrize(
+    ("attempts", "retry", "expected_status", "expected_delay"),
+    [
+        (1, True, "queued", 5),
+        (2, True, "queued", 10),
+        (3, True, "failed", None),
+        (1, False, "failed", None),
+    ],
+)
+def test_fail_job_applies_retry_backoff_and_terminal_state(
+    postgres_jobs, attempts, retry, expected_status, expected_delay
+):
+    job_id = 1
+    token = "current-job-lease"
+    message = "x" * 600
+
+    with postgres_jobs() as conn:
+        conn.execute(
+            """
+            UPDATE scan_jobs
+            SET status = 'running', attempts = %s,
+                lease_until = now() + interval '90 seconds',
+                lease_token = %s
+            WHERE id = %s
+            """,
+            (attempts, token, job_id),
+        )
+        original_available_at = conn.execute(
+            "SELECT available_at FROM scan_jobs WHERE id = %s",
+            (job_id,),
+        ).fetchone()[0]
+        before_failure = conn.execute("SELECT now()").fetchone()[0]
+
+    worker.fail_job(job_id, token, message, retry=retry)
+
+    with postgres_jobs() as conn:
+        after_failure = conn.execute("SELECT now()").fetchone()[0]
+        job = conn.execute(
+            """
+            SELECT status, attempts, available_at, finished_at,
+                   lease_until, lease_token, last_error
+            FROM scan_jobs
+            WHERE id = %s
+            """,
+            (job_id,),
+        ).fetchone()
+
+    assert job[0] == expected_status
+    assert job[1] == attempts
+    assert job[4] is None
+    assert job[5] is None
+    assert job[6] == message[:500]
+
+    if expected_delay is not None:
+        assert before_failure + timedelta(seconds=expected_delay) <= job[2]
+        assert job[2] <= after_failure + timedelta(seconds=expected_delay)
+        assert job[3] is None
+    else:
+        assert job[2] == original_available_at
+        assert job[3] is not None
