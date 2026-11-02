@@ -47,6 +47,26 @@ def postgres_reservations(monkeypatch):
                     last_scan_started_at TIMESTAMPTZ NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE authorization_bases (
+                    id BIGSERIAL PRIMARY KEY,
+                    domain_id BIGINT NOT NULL REFERENCES domains(id),
+                    valid_from TIMESTAMPTZ NOT NULL,
+                    valid_until TIMESTAMPTZ,
+                    revoked_at TIMESTAMPTZ,
+                    UNIQUE (id, domain_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE scan_targets (
+                    id BIGSERIAL PRIMARY KEY,
+                    domain_id BIGINT NOT NULL REFERENCES domains(id),
+                    authorization_basis_id BIGINT NOT NULL,
+                    status TEXT NOT NULL,
+                    FOREIGN KEY (authorization_basis_id, domain_id)
+                        REFERENCES authorization_bases(id, domain_id)
+                )
+            """)
             conn.cursor().executemany(
                 "INSERT INTO scan_slots(slot_id) VALUES (%s)",
                 [(slot,) for slot in range(1, main.MAX_CONCURRENT_SCANS + 1)],
@@ -54,6 +74,14 @@ def postgres_reservations(monkeypatch):
             conn.cursor().executemany(
                 "INSERT INTO domains(id, domain) VALUES (%s, %s)",
                 [(n, f"host{n}.example") for n in range(1, 21)],
+            )
+            conn.cursor().executemany(
+                "INSERT INTO authorization_bases(domain_id, valid_from) VALUES (%s, now())",
+                [(n,) for n in range(1, 21)],
+            )
+            conn.cursor().executemany(
+                "INSERT INTO scan_targets(domain_id, authorization_basis_id, status) VALUES (%s, %s, 'active')",
+                [(n, n) for n in range(1, 21)],
             )
         monkeypatch.setattr(main, "db_connect", connect)
         yield connect
