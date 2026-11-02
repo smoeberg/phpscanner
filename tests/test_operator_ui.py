@@ -44,3 +44,15 @@ def test_operator_domain_input_and_domain_list_have_distinct_ids():
     assert 'id="domain-list"' in response.text
     assert '$("domain-import-input").value' in response.text
     assert '$("domain-list").replaceChildren' in response.text
+
+
+def test_operator_home_exposes_authenticated_csv_download():
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert 'id="export-csv"' in response.text
+    assert 'fetch("/results.csv"' in response.text
+    assert '"X-API-Key": apiKey' in response.text
+    assert 'link.download = "dk-php-scanner-results.csv"' in response.text
+    assert "localStorage" not in response.text
+    assert "sessionStorage" not in response.text
