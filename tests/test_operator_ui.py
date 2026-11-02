@@ -115,3 +115,16 @@ def test_operator_scan_history_has_offset_pagination_controls():
     assert '$("scan-next").disabled = !hasMoreScans;' in response.text
     assert 'scanOffset=Math.max(0,scanOffset-scanPageSize)' in response.text
     assert 'scanOffset+=scanPageSize' in response.text
+
+
+
+def test_operator_lists_support_authenticated_search_filter():
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert 'id="list-search"' in response.text
+    assert 'id="search-lists"' in response.text
+    assert 'api("/prospects" + listSearch())' in response.text
+    assert 'api("/domains" + listSearch())' in response.text
+    assert 'encodeURIComponent(query)' in response.text
+    assert '$("list-search").addEventListener("keydown"' in response.text
