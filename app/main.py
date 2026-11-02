@@ -378,10 +378,39 @@ def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
     return [{"id": r[0], "domain": r[1], "source": r[2], "created_at": r[3].isoformat(), "verified_at": r[4].isoformat() if r[4] else None, "verified": r[4] is not None} for r in rows]
 
 
+class ScanAuthorizationError(Exception):
+    """Raised when a domain has no currently valid, enabled scan authorization."""
+
+
 def reserve_scan_capacity(domain_id: int) -> tuple[int, str] | None:
-    """Reserve a global slot and return its unique ownership fencing token."""
+    """Atomically validate authorization and reserve capacity for a scan.
+
+    The authorization rows are share-locked in the same transaction as the
+    capacity/cooldown reservation. A concurrent revoke/disable therefore
+    serializes with scan initiation; authorization is evaluated at reservation
+    time, not inferred from DNS control verification.
+    """
     lease_token = secrets.token_urlsafe(32)
     with db_connect() as conn:
+        authorized = conn.execute(
+            """
+            SELECT st.id
+            FROM scan_targets AS st
+            JOIN authorization_bases AS ab
+              ON ab.id = st.authorization_basis_id
+             AND ab.domain_id = st.domain_id
+            WHERE st.domain_id = %s
+              AND st.status = 'active'
+              AND ab.revoked_at IS NULL
+              AND ab.valid_from <= now()
+              AND (ab.valid_until IS NULL OR ab.valid_until > now())
+            FOR SHARE OF st, ab
+            """,
+            (domain_id,),
+        ).fetchone()
+        if not authorized:
+            raise ScanAuthorizationError("No active authorization for this scan target")
+
         slot = conn.execute(
             """
             WITH candidate AS (
@@ -442,6 +471,8 @@ async def scan_domain(domain_id: int):
         raise HTTPException(403, "Domænet skal verificeres før scanning")
     try:
         reservation = reserve_scan_capacity(row[0])
+    except ScanAuthorizationError:
+        raise HTTPException(403, "Scanning kræver et gyldigt, aktivt autorisationsgrundlag")
     except Exception:
         raise HTTPException(503, "Scan-kapacitet kunne ikke reserveres")
     if reservation is None:
