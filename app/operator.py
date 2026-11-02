@@ -83,6 +83,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 <h2>Seneste scanninger</h2>
 <p class="muted">Viser de seneste registrerede HTTP-observationer. En PHP-indikation er ikke i sig selv dokumentation for en sårbarhed.</p>
 <div id="scan-results"><p class="muted">Forbind for at hente scanneresultater.</p></div>
+<div id="scan-detail" class="status hidden" aria-live="polite"></div>
 </section>
 
 <section class="panel">
@@ -169,21 +170,60 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
         return [d.id,d.domain,d.verified?"Verificeret":"Ikke verificeret",actions];
       });
       $("domain-list").replaceChildren(table(["ID","Domæne","DNS-status","Handlinger"],dRows));
-      const scanRows = scans.map(scan => [
-        scan.scanned_at ? new Date(scan.scanned_at).toLocaleString() : "—",
-        scan.domain,
-        scan.status_code ?? "Intet HTTP-svar",
-        scan.php_indicator ? "Observeret" : "Ikke observeret",
-        scan.version_observed || "Ikke oplyst",
-        scan.confidence,
-        scan.notes || "—"
-      ]);
+      const scanRows = scans.map(scan => {
+        const actions = el("div");
+        const details = el("button","Vis detaljer");
+        details.className = "secondary";
+        details.addEventListener("click", () => loadScanDetails(scan.scan_id));
+        actions.append(details);
+        return [
+          scan.scanned_at ? new Date(scan.scanned_at).toLocaleString() : "—",
+          scan.domain,
+          scan.status_code ?? "Intet HTTP-svar",
+          scan.php_indicator ? "Observeret" : "Ikke observeret",
+          scan.version_observed || "Ikke oplyst",
+          scan.confidence,
+          scan.notes || "—",
+          actions
+        ];
+      });
       $("scan-results").replaceChildren(
-        scanRows.length ? table(["Tidspunkt","Domæne","HTTP-status","PHP-indikation","Observeret version","Vurdering","Noter"],scanRows)
+        scanRows.length ? table(["Tidspunkt","Domæne","HTTP-status","PHP-indikation","Observeret version","Vurdering","Noter","Detaljer"],scanRows)
           : el("p","Ingen scanninger er registreret endnu.","muted")
       );
       message("Data opdateret. "+prospects.length+" prospects, "+domains.length+" domæner og "+scans.length+" scanninger hentet.");
     } catch(e) { message(e.message); }
+  }
+  async function loadScanDetails(scanId) {
+    const panel = $("scan-detail");
+    panel.classList.remove("hidden");
+    panel.textContent = "Henter fund og observationer for scan #" + scanId + "…";
+    try {
+      const [findings, observations] = await Promise.all([
+        api("/scans/" + scanId + "/findings"),
+        api("/scans/" + scanId + "/observations")
+      ]);
+      const heading = el("h3","Scan #" + scanId + " · Fund");
+      const findingRows = findings.map(f => [
+        f.finding_type, f.assessment, f.confidence,
+        f.version_observed || "Ikke oplyst", f.rationale || "—",
+        f.evidence ? JSON.stringify(f.evidence) : "—"
+      ]);
+      const findingTable = findingRows.length
+        ? table(["Type","Vurdering","Sikkerhed","Version","Begrundelse","Evidens"],findingRows)
+        : el("p","Ingen afledte fund for denne scanning.","muted");
+      const observationHeading = el("h3","HTTP-observationer");
+      const observationRows = observations.map(o => [
+        o.observation_type, o.value ?? "—", o.source || "—",
+        o.observed_at ? new Date(o.observed_at).toLocaleString() : "—"
+      ]);
+      const observationTable = observationRows.length
+        ? table(["Type","Observeret værdi","Kilde","Tidspunkt"],observationRows)
+        : el("p","Ingen strukturerede observationer for denne scanning.","muted");
+      panel.replaceChildren(heading,findingTable,observationHeading,observationTable);
+    } catch(error) {
+      panel.textContent = "Kunne ikke hente scan-detaljer: " + error.message;
+    }
   }
   async function loadAuthorizations(domainId) {
     try {
