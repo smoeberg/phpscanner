@@ -76,3 +76,14 @@ def test_operator_home_exposes_scan_finding_and_observation_details():
     assert 'api("/scans/" + scanId + "/findings")' in response.text
     assert 'api("/scans/" + scanId + "/observations")' in response.text
     assert 'details.addEventListener("click", () => loadScanDetails(scan.scan_id))' in response.text
+
+
+def test_operator_home_requires_current_authorization_before_enabling_scan_button():
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert 'api("/domains/" + d.id + "/authorizations")' in response.text
+    assert "authorizations.some(a => a.currently_authorized)" in response.text
+    assert "scan.disabled = !d.verified || !currentlyAuthorized" in response.text
+    assert "Gyldig tilladelse" in response.text
+    assert "Ingen gyldig tilladelse" in response.text
