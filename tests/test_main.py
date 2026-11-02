@@ -788,6 +788,8 @@ def test_scan_returns_accepted_job_without_running_probe(monkeypatch):
         def fetchone(self):
             if "SELECT id, domain, verified_at" in self.query:
                 return (7, "example.com", datetime.now(timezone.utc))
+            if "SELECT verified_at FROM domains" in self.query:
+                return (datetime.now(timezone.utc),)
             if "SELECT st.id" in self.query:
                 return (11,)
             if "INSERT INTO scan_jobs" in self.query:
@@ -815,6 +817,8 @@ def test_scan_enqueue_rejects_missing_authorization(monkeypatch):
         def fetchone(self):
             if "SELECT id, domain, verified_at" in self.query:
                 return (7, "example.com", datetime.now(timezone.utc))
+            if "SELECT verified_at FROM domains" in self.query:
+                return (datetime.now(timezone.utc),)
             if "SELECT st.id" in self.query:
                 return None
             raise AssertionError(self.query)
