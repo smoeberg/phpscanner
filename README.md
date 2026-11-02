@@ -7,7 +7,7 @@ whether a server is vulnerable.
 ## Architecture
 
 - FastAPI application
-- PostgreSQL database
+- PostgreSQL database-backed scan queue and separate worker
 - Docker Compose deployment
 - API key authentication using X-API-Key
 - Host API binding restricted to 127.0.0.1:8787
@@ -66,14 +66,20 @@ curl -X POST http://127.0.0.1:8787/domains/1/authorizations \
   }'
 ```
 
+## Scan jobs
+
+`POST /domains/{domain_id}/scan` validates domain verification and current authorization, then returns HTTP 202 with a persistent `job_id`. The request does not perform the network probe. Poll `GET /scan-jobs/{job_id}` to inspect `queued`, `running`, `succeeded`, or `failed` status and retrieve the resulting `scan_id`. Both endpoints require `X-API-Key`.
+
+The worker runs separately from the API, claims jobs with PostgreSQL row locking, and uses expiring leases and fencing tokens. A worker crash leaves a recoverable job; transient execution failures are retried up to three attempts. Result persistence is idempotent per job, so recovery does not create duplicate scan rows. The worker rechecks domain verification and authorization immediately before execution. If no capacity slot is available, the job is returned to the queue without consuming an attempt.
+
 ## Scan rate limits
 
 - At most 4 scans may hold a global database-backed capacity slot at once.
 - A domain can start at most one scan every 60 seconds.
 - Capacity slots and per-domain cooldown timestamps are stored in PostgreSQL, so the limits apply across API workers and replicas sharing the database.
 - Slots use a 90-second lease and are released after the probe; a crashed worker's slot becomes available after lease expiry.
-- A denied reservation returns HTTP 429. If PostgreSQL cannot enforce the reservation, the API fails closed with HTTP 503.
-- Each scan is wrapped in a strict 60-second end-to-end deadline, leaving a 30-second lease safety margin. Deadline expiry returns HTTP 504 and releases the slot in `finally`.
+- A job waits in the queue when no capacity slot or domain cooldown is available.
+- Each probe has a strict 60-second deadline, leaving a 30-second lease safety margin.
 
 ## Authentication
 
@@ -98,7 +104,7 @@ until a separately reviewed public-access architecture is implemented.
    docker compose ps
    ```
 
-   The API container runs `alembic upgrade head` before starting FastAPI.
+   The API container runs `alembic upgrade head` before starting FastAPI and exposes a health check. Compose starts the separate worker only after the API is healthy, so the worker never races the schema migration.
    Back up PostgreSQL before deploying schema changes. See
    [migrations/README.md](migrations/README.md) for the migration policy.
 
@@ -121,7 +127,7 @@ This is an MVP, not a production-ready national scanning platform.
 Not yet implemented:
 
 - A browser-based operator interface for authorization management
-- Persistent background job queue and scheduling
+- Scheduled/recurring scans
 - Authoritative PHP/vendor advisory database
 - CVE and distribution-specific package assessment
 - Local read-only PHP runtime agent
