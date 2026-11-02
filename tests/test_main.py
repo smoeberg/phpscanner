@@ -211,9 +211,9 @@ def test_probe_sends_request_to_pinned_ip_with_original_host_and_tls_name(monkey
 
     result = asyncio.run(main.probe("example.com"))
 
-    assert observed["url"].host == "8.8.8.8"
+    assert observed["url"].host == "example.com"
     assert observed["host"] == "example.com"
-    assert observed["sni_hostname"] == b"example.com"
+    assert observed["sni_hostname"] is None
     assert result["status_code"] == 200
     assert result["version_observed"] == "8.2.1"
 
@@ -346,7 +346,8 @@ def test_results_csv_streams_bounded_batches_without_fetchall(monkeypatch):
     class FakeCursor:
         def __init__(self):
             self.batches = [
-                [("example.com", "2026-10-30T12:00:00+00:00", 200, "nginx", "PHP/8.3", True, "8.3", "version-disclosed", "ok")],
+                [("example.com", "2026-10-30T12:00:00+00:00", 200, "nginx", "PHP/8.3", True, "8.3", "version-disclosed", "ok",
+                  "php_runtime_disclosure", "disclosed", "high", "8.3", "Header disclosure only.", "[]", "[]")],
                 [],
             ]
             self.fetch_sizes = []
@@ -395,6 +396,10 @@ def test_results_csv_streams_bounded_batches_without_fetchall(monkeypatch):
     assert csv_text.startswith("domain,scanned_at,status_code")
     assert "example.com" in csv_text
     assert "PHP/8.3" in csv_text
+    assert "finding_assessment" in csv_text.splitlines()[0]
+    assert "prospect_associations" in csv_text.splitlines()[0]
+    assert "php_runtime_disclosure" in csv_text
+    assert "[]" in csv_text
     assert connection.fake_cursor.fetch_sizes == [500, 500]
 
 
@@ -440,3 +445,526 @@ def test_response_body_limit_rejects_negative_limit():
 
     with pytest.raises(ValueError, match="must not be negative"):
         asyncio.run(_read_response_body_limited(FakeResponse(), -1))
+
+
+def test_scan_rejects_unverified_domain(monkeypatch):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            assert "verified_at" in query
+            return self
+        def fetchone(self): return (7, "example.com", None)
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Domænet skal verificeres før scanning"
+
+
+def test_challenge_returns_dns_record_and_stores_only_hash(monkeypatch):
+    import hashlib
+
+    captured = {}
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            if query.startswith("SELECT domain"): return self
+            captured["params"] = params
+            return self
+        def fetchone(self): return ("example.com",)
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/verification-challenge", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["record_name"] == "_dk-php-scanner-verification.example.com"
+    assert data["record_type"] == "TXT"
+    token = data["record_value"].split("=", 1)[1]
+    assert captured["params"][0] == hashlib.sha256(token.encode()).hexdigest()
+    assert token not in captured["params"][0]
+
+
+
+def _verification_test_state():
+    from datetime import datetime, timedelta, timezone
+    import hashlib
+
+    token = "test-verification-token"
+    return {
+        "domain": "example.com",
+        "token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+        "token": token,
+    }
+
+
+def _install_verification_db(monkeypatch, state, *, update_succeeds=True):
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params):
+            self.query = query
+            self.params = params
+            if query.startswith("UPDATE domains SET verified_at"):
+                if (
+                    update_succeeds
+                    and state["token_hash"] == params[2]
+                    and state["expires_at"] > params[3]
+                ):
+                    state["verified_at"] = params[0]
+                    state["token_hash"] = None
+                    state["expires_at"] = None
+                    self.result = (state["domain"],)
+                else:
+                    self.result = None
+            else:
+                self.result = (
+                    state["domain"],
+                    state["token_hash"],
+                    state["expires_at"],
+                )
+            return self
+
+        def fetchone(self):
+            return self.result
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+
+
+def _txt_answer(value):
+    class FakeTxtRecord:
+        strings = [value.encode("utf-8")]
+
+    return [FakeTxtRecord()]
+
+
+def test_verify_domain_accepts_matching_dns_txt_and_consumes_challenge(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state)
+
+    async def resolve(name, record_type, lifetime):
+        assert name == "_dk-php-scanner-verification.example.com."
+        assert record_type == "TXT"
+        assert lifetime == 5
+        return _txt_answer(f"dk-php-scanner-verification={state['token']}")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["verified"] is True
+    assert response.json()["domain"] == "example.com"
+    assert state["verified_at"] is not None
+    assert state["token_hash"] is None
+    assert state["expires_at"] is None
+
+
+def test_verify_domain_rejects_wrong_dns_txt(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state)
+
+    async def resolve(*_args, **_kwargs):
+        return _txt_answer("dk-php-scanner-verification=wrong-token")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "DNS TXT-verifikation kunne ikke bekræftes"
+    assert state["token_hash"] is not None
+    assert state.get("verified_at") is None
+
+
+def test_verify_domain_rejects_expired_challenge_without_dns_lookup(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    state = _verification_test_state()
+    state["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    _install_verification_db(monkeypatch, state)
+
+    async def unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("DNS must not be queried for an expired challenge")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", unexpected_resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Verifikationschallenge mangler eller er udløbet"
+
+
+def test_verify_domain_rejects_replayed_challenge(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state)
+
+    async def resolve(_name, _record_type, lifetime):
+        assert lifetime == 5
+        return _txt_answer(f"dk-php-scanner-verification={state['token']}")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(app)
+    headers = {"X-API-Key": "test-secret"}
+
+    first = client.post("/domains/7/verify", headers=headers)
+    second = client.post("/domains/7/verify", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 400
+    assert second.json()["detail"] == "Verifikationschallenge mangler eller er udløbet"
+
+
+def test_verify_domain_fails_closed_when_dns_lookup_errors(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state)
+
+    async def fail_resolve(*_args, **_kwargs):
+        raise TimeoutError("resolver internals must not leak")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", fail_resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "DNS TXT-verifikation kunne ikke bekræftes"
+    assert "resolver internals" not in response.text
+    assert state["token_hash"] is not None
+
+
+
+def test_pinned_network_backend_connects_only_to_approved_ip(monkeypatch):
+    backend = main._PinnedNetworkBackend("example.com", "8.8.8.8")
+    observed = {}
+
+    async def connect_tcp(host, port, **kwargs):
+        observed["host"] = host
+        observed["port"] = port
+        return "stream"
+
+    monkeypatch.setattr(backend._backend, "connect_tcp", connect_tcp)
+    result = asyncio.run(backend.connect_tcp("example.com", 443, timeout=3))
+
+    assert result == "stream"
+    assert observed == {"host": "8.8.8.8", "port": 443}
+
+
+def test_pinned_network_backend_rejects_unexpected_hostname():
+    backend = main._PinnedNetworkBackend("example.com", "8.8.8.8")
+
+    with pytest.raises(Exception, match="Unexpected destination host"):
+        asyncio.run(backend.connect_tcp("attacker.example", 443, timeout=3))
+
+
+
+def test_verify_domain_returns_conflict_when_another_request_consumed_challenge(monkeypatch):
+    state = _verification_test_state()
+    _install_verification_db(monkeypatch, state, update_succeeds=False)
+
+    async def resolve(_name, _record_type, lifetime):
+        return _txt_answer(f"dk-php-scanner-verification={state['token']}")
+
+    monkeypatch.setattr(main.dns.asyncresolver, "resolve", resolve)
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).post(
+        "/domains/7/verify",
+        headers={"X-API-Key": "test-secret"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Challenge er udløbet eller allerede anvendt"
+
+
+def test_list_domains_exposes_verification_state_without_challenge_secrets(monkeypatch):
+    from datetime import datetime, timezone
+
+    verified_at = datetime.now(timezone.utc)
+
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            assert "verified_at" in query
+            assert "verification_token_hash" not in query
+            assert "verification_expires_at" not in query
+            return self
+        def fetchall(self): return [(7, "example.com", "manual", verified_at, None)]
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+
+    response = TestClient(app).get("/domains", headers={"X-API-Key": "test-secret"})
+
+    assert response.status_code == 200
+    assert response.json() == [{
+        "id": 7,
+        "domain": "example.com",
+        "source": "manual",
+        "created_at": verified_at.isoformat(),
+        "verified_at": None,
+        "verified": False,
+    }]
+
+
+@pytest.mark.parametrize(
+    "addresses",
+    [
+        ["8.8.8.8", "127.0.0.1"],
+        ["2606:4700:4700::1111", "fd00::1"],
+        ["8.8.8.8", "::1"],
+    ],
+)
+def test_validate_public_ips_rejects_mixed_public_and_non_public_answers(addresses):
+    answers = [
+        (socket.AF_INET6 if ":" in address else socket.AF_INET,
+         socket.SOCK_STREAM, 6, "", (address, 0, 0, 0) if ":" in address else (address, 0))
+        for address in addresses
+    ]
+    with pytest.raises(RuntimeError, match="ikke-offentlig IP"):
+        main._validate_public_ips(answers)
+
+
+def test_validate_public_ips_deduplicates_and_accepts_public_ipv4_ipv6():
+    addresses = ["8.8.8.8", "8.8.8.8", "2606:4700:4700::1111"]
+    answers = [
+        (socket.AF_INET6 if ":" in address else socket.AF_INET,
+         socket.SOCK_STREAM, 6, "", (address, 0, 0, 0) if ":" in address else (address, 0))
+        for address in addresses
+    ]
+    assert main._validate_public_ips(answers) == sorted(set(addresses))
+
+
+def test_pinned_backend_rejects_unexpected_hostname():
+    import httpcore
+
+    backend = main._PinnedNetworkBackend("example.test", "8.8.8.8")
+
+    async def attempt():
+        with pytest.raises(httpcore.ConnectError, match="Unexpected destination host"):
+            await backend.connect_tcp(b"attacker.test", 443)
+
+    asyncio.run(attempt())
+
+
+from datetime import datetime, timezone
+
+
+def test_scan_returns_accepted_job_without_running_probe(monkeypatch):
+    from datetime import datetime, timezone
+
+    class FakeConnection:
+        def __init__(self): self.query = ""
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, _params):
+            self.query = query
+            return self
+        def fetchone(self):
+            if "SELECT id, domain, verified_at" in self.query:
+                return (7, "example.com", datetime.now(timezone.utc))
+            if "SELECT st.id" in self.query:
+                return (11,)
+            if "INSERT INTO scan_jobs" in self.query:
+                return (55,)
+            raise AssertionError(self.query)
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 202
+    assert response.json()["job_id"] == 55
+    assert response.json()["status"] == "queued"
+
+
+def test_scan_enqueue_rejects_missing_authorization(monkeypatch):
+    from datetime import datetime, timezone
+
+    class FakeConnection:
+        def __init__(self): self.query = ""
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, _params):
+            self.query = query
+            return self
+        def fetchone(self):
+            if "SELECT id, domain, verified_at" in self.query:
+                return (7, "example.com", datetime.now(timezone.utc))
+            if "SELECT st.id" in self.query:
+                return None
+            raise AssertionError(self.query)
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 403
+    assert "autorisationsgrundlag" in response.json()["detail"]
+
+
+def test_scan_enqueue_fails_closed_on_database_error(monkeypatch):
+    from datetime import datetime, timezone
+
+    class FakeConnection:
+        def __init__(self): self.query = ""
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, _params):
+            self.query = query
+            return self
+        def fetchone(self):
+            if "SELECT id, domain, verified_at" in self.query:
+                return (7, "example.com", datetime.now(timezone.utc))
+            raise RuntimeError("database internals must not leak")
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).post("/domains/7/scan", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 503
+    assert "database internals" not in response.text
+
+
+def test_scan_job_status_is_api_key_protected_and_inspectable(monkeypatch):
+    from datetime import datetime, timezone
+
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, _query, _params): return self
+        def fetchone(self):
+            now = datetime.now(timezone.utc)
+            return (55, 7, "example.com", "succeeded", 1, now, now, now, 42, None)
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(app)
+    denied = client.get("/scan-jobs/55")
+    assert denied.status_code == 401
+    response = client.get("/scan-jobs/55", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert response.json()["scan_id"] == 42
+
+
+def test_health_liveness_does_not_require_database(monkeypatch):
+    def unexpected_db_connect():
+        raise AssertionError("liveness must not connect to PostgreSQL")
+
+    monkeypatch.setattr(main, "db_connect", unexpected_db_connect)
+    response = TestClient(app).get("/health/live")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.headers.get("X-Request-ID")
+
+
+def test_health_readiness_checks_database(monkeypatch):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query):
+            assert query == "SELECT 1"
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_health_readiness_returns_503_when_database_is_unavailable(monkeypatch):
+    import psycopg
+
+    def unavailable():
+        raise psycopg.OperationalError("private database detail")
+
+    monkeypatch.setattr(main, "db_connect", unavailable)
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Database unavailable"
+    assert "private database detail" not in response.text
+
+
+def test_legacy_health_endpoint_remains_a_readiness_alias(monkeypatch):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query): assert query == "SELECT 1"
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "dk-php-exposure-scanner"
+
+
+
+def test_list_scan_jobs_is_api_key_protected_and_returns_recent_job_details(monkeypatch):
+    from datetime import datetime, timezone
+
+    created = datetime.now(timezone.utc)
+
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            assert "FROM scan_jobs AS j" in query
+            assert "ORDER BY j.created_at DESC, j.id DESC" in query
+            assert params == (50, 0)
+            return self
+        def fetchall(self):
+            return [(55, 7, "example.com", "running", 2, created, created, None, None, None)]
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(app)
+
+    denied = client.get("/scan-jobs")
+    assert denied.status_code == 401
+
+    response = client.get("/scan-jobs", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 200
+    assert response.json() == [{
+        "job_id": 55,
+        "domain_id": 7,
+        "domain": "example.com",
+        "status": "running",
+        "attempts": 2,
+        "created_at": created.isoformat(),
+        "started_at": created.isoformat(),
+        "finished_at": None,
+        "scan_id": None,
+        "error": None,
+    }]
+
+
+@pytest.mark.parametrize("query", ["?limit=0", "?limit=1001", "?offset=-1"])
+def test_list_scan_jobs_rejects_invalid_pagination(query, monkeypatch):
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).get("/scan-jobs" + query, headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 400

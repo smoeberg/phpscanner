@@ -1,0 +1,226 @@
+"""PostgreSQL integration tests for persistent scan job claiming and completion."""
+from datetime import datetime, timedelta, timezone
+import os
+import uuid
+
+import psycopg
+import pytest
+
+from app import main, worker
+
+
+@pytest.fixture
+def postgres_jobs(monkeypatch):
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        pytest.skip("DATABASE_URL is required for PostgreSQL integration tests")
+
+    schema = "scan_jobs_" + uuid.uuid4().hex
+    with psycopg.connect(database_url, autocommit=True) as admin:
+        admin.execute(f'CREATE SCHEMA "{schema}"')
+
+    def connect():
+        return psycopg.connect(database_url, options=f"-c search_path={schema}")
+
+    try:
+        with connect() as conn:
+            conn.execute("""
+                CREATE TABLE domains (
+                    id BIGINT PRIMARY KEY,
+                    domain TEXT NOT NULL UNIQUE,
+                    verified_at TIMESTAMPTZ
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE scans (
+                    id BIGSERIAL PRIMARY KEY,
+                    domain_id BIGINT NOT NULL REFERENCES domains(id),
+                    scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    status_code INTEGER,
+                    final_url TEXT,
+                    server_header TEXT,
+                    powered_by TEXT,
+                    php_indicator BOOLEAN NOT NULL DEFAULT false,
+                    version_observed TEXT,
+                    confidence TEXT NOT NULL DEFAULT 'unknown',
+                    notes TEXT NOT NULL DEFAULT '',
+                    job_id BIGINT UNIQUE
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE scan_observations (
+                    id BIGSERIAL PRIMARY KEY,
+                    scan_id BIGINT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+                    observation_type TEXT NOT NULL
+                        CHECK (observation_type IN ('http_status', 'server_header', 'x_powered_by')),
+                    observed_value TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    UNIQUE (scan_id, observation_type)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE scan_findings (
+                    id BIGSERIAL PRIMARY KEY,
+                    scan_id BIGINT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+                    finding_type TEXT NOT NULL,
+                    assessment TEXT NOT NULL
+                        CHECK (assessment IN ('disclosed', 'possible', 'undetermined')),
+                    confidence TEXT NOT NULL
+                        CHECK (confidence IN ('high', 'low', 'undetermined')),
+                    version_observed TEXT,
+                    rationale TEXT NOT NULL,
+                    evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (scan_id, finding_type)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX ix_scan_findings_scan_id
+                ON scan_findings(scan_id, id)
+            """)
+            conn.execute("""
+                CREATE TABLE scan_jobs (
+                    id BIGSERIAL PRIMARY KEY,
+                    domain_id BIGINT NOT NULL REFERENCES domains(id),
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    started_at TIMESTAMPTZ,
+                    finished_at TIMESTAMPTZ,
+                    lease_until TIMESTAMPTZ,
+                    lease_token TEXT,
+                    scan_id BIGINT,
+                    last_error TEXT
+                )
+            """)
+            conn.execute(
+                "INSERT INTO domains(id, domain, verified_at) VALUES (1, 'example.com', now())"
+            )
+            conn.execute(
+                "INSERT INTO scan_jobs(domain_id, status) VALUES (1, 'queued')"
+            )
+        monkeypatch.setattr(main, "db_connect", connect)
+        yield connect
+    finally:
+        with psycopg.connect(database_url, autocommit=True) as admin:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_claimed_job_can_be_reclaimed_after_worker_lease_expires(postgres_jobs):
+    first = worker.claim_next_job()
+    assert first is not None
+    assert first[0] == 1
+    assert first[2] == 1
+
+    with postgres_jobs() as conn:
+        conn.execute(
+            "UPDATE scan_jobs SET lease_until = %s WHERE id = %s",
+            (datetime.now(timezone.utc) - timedelta(seconds=1), first[0]),
+        )
+
+    second = worker.claim_next_job()
+    assert second is not None
+    assert second[0] == first[0]
+    assert second[2] == 2
+    assert second[3] != first[3]
+
+
+def test_persist_result_completes_job_and_links_scan_once(postgres_jobs):
+    claimed = worker.claim_next_job()
+    assert claimed is not None
+    job_id, domain_id, _attempts, token = claimed
+    result = {
+        "status_code": 200,
+        "final_url": "https://example.com/",
+        "server_header": "example",
+        "powered_by": "",
+        "php_indicator": False,
+        "version_observed": None,
+        "confidence": "unknown",
+        "notes": "bounded observation",
+    }
+
+    worker.persist_result(job_id, domain_id, token, result)
+
+    with postgres_jobs() as conn:
+        job = conn.execute(
+            "SELECT status, scan_id, lease_token FROM scan_jobs WHERE id = %s",
+            (job_id,),
+        ).fetchone()
+        scans = conn.execute(
+            "SELECT id, job_id, notes FROM scans WHERE job_id = %s",
+            (job_id,),
+        ).fetchall()
+
+    assert job[0] == "succeeded"
+    assert job[1] == scans[0][0]
+    assert job[2] is None
+    assert len(scans) == 1
+    assert scans[0][1] == job_id
+    assert scans[0][2] == "bounded observation"
+
+
+@pytest.mark.parametrize(
+    ("attempts", "retry", "expected_status", "expected_delay"),
+    [
+        (1, True, "queued", 5),
+        (2, True, "queued", 10),
+        (3, True, "failed", None),
+        (1, False, "failed", None),
+    ],
+)
+def test_fail_job_applies_retry_backoff_and_terminal_state(
+    postgres_jobs, attempts, retry, expected_status, expected_delay
+):
+    job_id = 1
+    token = "current-job-lease"
+    message = "x" * 600
+
+    with postgres_jobs() as conn:
+        conn.execute(
+            """
+            UPDATE scan_jobs
+            SET status = 'running', attempts = %s,
+                lease_until = now() + interval '90 seconds',
+                lease_token = %s
+            WHERE id = %s
+            """,
+            (attempts, token, job_id),
+        )
+        original_available_at = conn.execute(
+            "SELECT available_at FROM scan_jobs WHERE id = %s",
+            (job_id,),
+        ).fetchone()[0]
+        before_failure = conn.execute("SELECT now()").fetchone()[0]
+
+    worker.fail_job(job_id, token, message, retry=retry)
+
+    with postgres_jobs() as conn:
+        after_failure = conn.execute("SELECT now()").fetchone()[0]
+        job = conn.execute(
+            """
+            SELECT status, attempts, available_at, finished_at,
+                   lease_until, lease_token, last_error
+            FROM scan_jobs
+            WHERE id = %s
+            """,
+            (job_id,),
+        ).fetchone()
+
+    assert job[0] == expected_status
+    assert job[1] == attempts
+    assert job[4] is None
+    assert job[5] is None
+    assert job[6] == message[:500]
+
+    if expected_delay is not None:
+        assert before_failure + timedelta(seconds=expected_delay) <= job[2]
+        assert job[2] <= after_failure + timedelta(seconds=expected_delay)
+        assert job[3] is None
+    else:
+        assert job[2] == original_available_at
+        assert job[3] is not None
