@@ -879,6 +879,35 @@ def get_scan_job(job_id: int):
     }
 
 
+@app.get("/scan-jobs", dependencies=[Depends(require_api_key)])
+def list_scan_jobs(limit: int = 50, offset: int = 0):
+    if not 1 <= limit <= 1000 or offset < 0:
+        raise HTTPException(400, "limit skal være 1-1000 og offset mindst 0")
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT j.id, j.domain_id, d.domain, j.status, j.attempts,
+                   j.created_at, j.started_at, j.finished_at, j.scan_id, j.last_error
+            FROM scan_jobs AS j
+            JOIN domains AS d ON d.id = j.domain_id
+            ORDER BY j.created_at DESC, j.id DESC
+            LIMIT %s OFFSET %s
+            """,
+            (limit, offset),
+        ).fetchall()
+    return [
+        {
+            "job_id": row[0], "domain_id": row[1], "domain": row[2],
+            "status": row[3], "attempts": row[4],
+            "created_at": row[5].isoformat(),
+            "started_at": row[6].isoformat() if row[6] else None,
+            "finished_at": row[7].isoformat() if row[7] else None,
+            "scan_id": row[8], "error": row[9],
+        }
+        for row in rows
+    ]
+
+
 @app.get("/scans/{scan_id}/observations", dependencies=[Depends(require_api_key)])
 def get_scan_observations(scan_id: int):
     with db_connect() as conn:
