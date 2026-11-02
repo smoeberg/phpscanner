@@ -921,3 +921,50 @@ def test_legacy_health_endpoint_remains_a_readiness_alias(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["service"] == "dk-php-exposure-scanner"
+
+
+
+def test_list_scan_jobs_is_api_key_protected_and_returns_recent_job_details(monkeypatch):
+    from datetime import datetime, timezone
+
+    created = datetime.now(timezone.utc)
+
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query, params):
+            assert "FROM scan_jobs AS j" in query
+            assert "ORDER BY j.created_at DESC, j.id DESC" in query
+            assert params == (50, 0)
+            return self
+        def fetchall(self):
+            return [(55, 7, "example.com", "running", 2, created, created, None, None, None)]
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(app)
+
+    denied = client.get("/scan-jobs")
+    assert denied.status_code == 401
+
+    response = client.get("/scan-jobs", headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 200
+    assert response.json() == [{
+        "job_id": 55,
+        "domain_id": 7,
+        "domain": "example.com",
+        "status": "running",
+        "attempts": 2,
+        "created_at": created.isoformat(),
+        "started_at": created.isoformat(),
+        "finished_at": None,
+        "scan_id": None,
+        "error": None,
+    }]
+
+
+@pytest.mark.parametrize("query", ["?limit=0", "?limit=1001", "?offset=-1"])
+def test_list_scan_jobs_rejects_invalid_pagination(query, monkeypatch):
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    response = TestClient(app).get("/scan-jobs" + query, headers={"X-API-Key": "test-secret"})
+    assert response.status_code == 400
