@@ -71,6 +71,21 @@ def test_operator_can_import_authorize_scan_review_and_export(
     assert domain["domain"] == "example.com"
     domain_id = domain["id"]
 
+    prospect_response = client.post(
+        "/prospects",
+        headers=headers,
+        json={"name": "Example Organization"},
+    )
+    assert prospect_response.status_code == 201
+    prospect_id = prospect_response.json()["id"]
+    association_response = client.post(
+        f"/prospects/{prospect_id}/domains",
+        headers=headers,
+        json={"domain_id": domain_id},
+    )
+    assert association_response.status_code == 200
+    assert association_response.json()["association_status"] == "unverified"
+
     challenge = client.post(
         f"/domains/{domain_id}/verification-challenge",
         headers=headers,
@@ -191,6 +206,10 @@ def test_operator_can_import_authorize_scan_review_and_export(
     assert "PHP/8.3.1" in csv_lines[1]
     assert "php_runtime_disclosure" in csv_lines[1]
     assert "disclosed" in csv_lines[1]
+    assert "prospect_associations" in csv_lines[0]
+    assert "Example Organization" in csv_lines[1]
+    assert "unverified" in csv_lines[1]
+    assert String(prospect_id) in csv_lines[1]
 
     assert authorization_data["scan_target_id"]
 
