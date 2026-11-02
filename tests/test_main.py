@@ -968,3 +968,13 @@ def test_list_scan_jobs_rejects_invalid_pagination(query, monkeypatch):
     monkeypatch.setattr(main, "API_KEY", "test-secret")
     response = TestClient(app).get("/scan-jobs" + query, headers={"X-API-Key": "test-secret"})
     assert response.status_code == 400
+
+
+def test_app_startup_does_not_connect_to_database_or_run_schema_ddl(monkeypatch):
+    def unexpected_connection():
+        raise AssertionError("API startup must not connect to PostgreSQL")
+
+    monkeypatch.setattr(main, "db_connect", unexpected_connection)
+    with TestClient(app) as client:
+        response = client.get("/health/live")
+    assert response.status_code == 200
