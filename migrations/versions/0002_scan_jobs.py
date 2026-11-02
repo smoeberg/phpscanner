@@ -35,7 +35,7 @@ def upgrade() -> None:
         ALTER TABLE scans ADD CONSTRAINT fk_scans_job_id
         FOREIGN KEY (job_id) REFERENCES scan_jobs(id) ON DELETE SET NULL
     """)
-    op.execute("CREATE UNIQUE INDEX ux_scans_job_id ON scans(job_id) WHERE job_id IS NOT NULL")
+    op.execute("ALTER TABLE scans ADD CONSTRAINT uq_scans_job_id UNIQUE (job_id)")
     op.execute("""
         CREATE INDEX ix_scan_jobs_queue
         ON scan_jobs(status, available_at, created_at)
@@ -53,7 +53,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS ix_scan_jobs_domain_created")
     op.execute("DROP INDEX IF EXISTS ix_scan_jobs_queue")
-    op.execute("DROP INDEX IF EXISTS ux_scans_job_id")
+    op.execute("ALTER TABLE scans DROP CONSTRAINT IF EXISTS uq_scans_job_id")
     op.execute("ALTER TABLE scan_jobs DROP CONSTRAINT IF EXISTS fk_scan_jobs_scan_id")
     op.execute("ALTER TABLE scans DROP CONSTRAINT IF EXISTS fk_scans_job_id")
     op.execute("ALTER TABLE scans DROP COLUMN IF EXISTS job_id")
