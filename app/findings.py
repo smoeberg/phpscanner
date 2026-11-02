@@ -2,7 +2,7 @@
 import re
 
 
-PHP_VERSION_RE = re.compile(r"(?i)\\bPHP\\s*/?\\s*(\\d+\\.\\d+(?:\\.\\d+)?)")
+PHP_VERSION_RE = re.compile(r"(?i)\bPHP\s*/?\s*(\d+\.\d+(?:\.\d+)?)")
 
 
 def derive_findings(observations: list[dict]) -> list[dict]:
@@ -35,7 +35,7 @@ def derive_findings(observations: list[dict]) -> list[dict]:
 
     powered_value = powered["observed_value"] if powered else ""
     server_value = server["observed_value"] if server else ""
-    if re.search(r"(?i)\\bPHP\\b", powered_value):
+    if re.search(r"(?i)\bPHP\b", powered_value):
         assessment = "disclosed"
         confidence = "high"
         rationale = (
@@ -43,7 +43,7 @@ def derive_findings(observations: list[dict]) -> list[dict]:
             + (f" version {version}" if version else "")
             + ". This confirms technology disclosure only; it does not establish an outdated or vulnerable runtime."
         )
-    elif re.search(r"(?i)\\bPHP\\b", server_value):
+    elif re.search(r"(?i)\bPHP\b", server_value):
         assessment = "possible"
         confidence = "low"
         rationale = (
