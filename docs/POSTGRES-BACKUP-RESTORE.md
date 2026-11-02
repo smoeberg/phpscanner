@@ -145,3 +145,21 @@ reviewed recovery plan.
   replication.
 - Test a restore after PostgreSQL major-version changes and before relying on
   a new backup/restore method.
+
+## Automated isolated restore drill
+
+The CI workflow runs `scripts/verify-postgres-restore.sh` against its disposable
+PostgreSQL 16 service. The script creates uniquely named source and restore
+databases, applies the repository's Alembic migrations to the source, inserts
+non-sensitive fixture records, creates a custom-format `pg_dump`, verifies its
+SHA-256 checksum and archive directory, and restores it into the separate empty
+target database. It then checks the restored Alembic revision, all 12 expected
+application/migration tables, and the fixture domain/prospect association.
+Both databases and the temporary dump are removed on exit.
+
+This CI check validates the backup/restore mechanics and current schema against
+synthetic data. It is **not** a restore of a production backup and does not
+establish that any particular operational backup is recoverable. Operators must
+still perform the isolated restore drill above using an actual protected backup,
+then validate the restored application data and record the result. The CI job
+never receives production credentials or backup files.
