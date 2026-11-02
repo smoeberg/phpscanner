@@ -32,7 +32,7 @@ def authorization_db(monkeypatch):
                 CREATE TABLE domains (
                     id BIGINT PRIMARY KEY,
                     domain TEXT NOT NULL UNIQUE,
-                    verified_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    verified_at TIMESTAMPTZ DEFAULT now()
                 )
             """)
             conn.execute("""
