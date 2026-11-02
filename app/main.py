@@ -138,6 +138,17 @@ class DomainImport(BaseModel):
     source: str = Field(default="manual", max_length=100)
 
 
+class ProspectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    organization_number: str | None = Field(default=None, max_length=100)
+    website_url: str | None = Field(default=None, max_length=500)
+    notes: str = Field(default="", max_length=2000)
+
+
+class ProspectDomainAssociation(BaseModel):
+    domain_id: int = Field(gt=0)
+
+
 def normalize_domain(raw: str) -> str:
     value = raw.strip().lower().rstrip(".")
     if value.startswith("http://") or value.startswith("https://"):
@@ -443,6 +454,121 @@ def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
             ).fetchall()
     return [{"id": r[0], "domain": r[1], "source": r[2], "created_at": r[3].isoformat(), "verified_at": r[4].isoformat() if r[4] else None, "verified": r[4] is not None} for r in rows]
 
+
+
+@app.post("/prospects", status_code=201, dependencies=[Depends(require_api_key)])
+def create_prospect(payload: ProspectCreate):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Prospectnavn skal indeholde tekst")
+    organization_number = payload.organization_number.strip() if payload.organization_number else None
+    website_url = payload.website_url.strip() if payload.website_url else None
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO prospects(name, organization_number, website_url, notes)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, name, organization_number, website_url, notes, created_at, updated_at
+            """,
+            (name, organization_number or None, website_url or None, payload.notes),
+        ).fetchone()
+    return {
+        "id": row[0], "name": row[1], "organization_number": row[2],
+        "website_url": row[3], "notes": row[4],
+        "created_at": row[5].isoformat(), "updated_at": row[6].isoformat(),
+        "domains": [],
+    }
+
+
+@app.get("/prospects", dependencies=[Depends(require_api_key)])
+def list_prospects(limit: int = 100, offset: int = 0, q: str | None = None):
+    if not 1 <= limit <= 1000 or offset < 0:
+        raise HTTPException(400, "limit skal være 1-1000 og offset mindst 0")
+    with db_connect() as conn:
+        if q:
+            rows = conn.execute(
+                """
+                SELECT p.id, p.name, p.organization_number, p.website_url, p.notes,
+                       p.created_at, p.updated_at, pd.id, d.id, d.domain,
+                       pd.association_status, pd.created_at
+                FROM prospects AS p
+                LEFT JOIN prospect_domains AS pd ON pd.prospect_id = p.id
+                LEFT JOIN domains AS d ON d.id = pd.domain_id
+                WHERE p.name ILIKE %s OR COALESCE(p.organization_number, '') ILIKE %s
+                ORDER BY p.name, p.id, d.domain
+                LIMIT %s OFFSET %s
+                """,
+                (f"%{q[:200]}%", f"%{q[:200]}%", limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT p.id, p.name, p.organization_number, p.website_url, p.notes,
+                       p.created_at, p.updated_at, pd.id, d.id, d.domain,
+                       pd.association_status, pd.created_at
+                FROM prospects AS p
+                LEFT JOIN prospect_domains AS pd ON pd.prospect_id = p.id
+                LEFT JOIN domains AS d ON d.id = pd.domain_id
+                ORDER BY p.name, p.id, d.domain
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
+            ).fetchall()
+
+    prospects = {}
+    for row in rows:
+        prospect = prospects.setdefault(row[0], {
+            "id": row[0], "name": row[1], "organization_number": row[2],
+            "website_url": row[3], "notes": row[4],
+            "created_at": row[5].isoformat(), "updated_at": row[6].isoformat(),
+            "domains": [],
+        })
+        if row[7] is not None:
+            prospect["domains"].append({
+                "association_id": row[7], "domain_id": row[8], "domain": row[9],
+                "association_status": row[10], "associated_at": row[11].isoformat(),
+            })
+    return list(prospects.values())
+
+
+@app.post("/prospects/{prospect_id}/domains", dependencies=[Depends(require_api_key)])
+def associate_domain_with_prospect(
+    prospect_id: int, payload: ProspectDomainAssociation
+):
+    with db_connect() as conn:
+        if not conn.execute(
+            "SELECT id FROM prospects WHERE id = %s", (prospect_id,)
+        ).fetchone():
+            raise HTTPException(404, "Prospect ikke fundet")
+        domain = conn.execute(
+            "SELECT id, domain FROM domains WHERE id = %s", (payload.domain_id,)
+        ).fetchone()
+        if not domain:
+            raise HTTPException(404, "Domæne ikke fundet")
+        association = conn.execute(
+            """
+            INSERT INTO prospect_domains(prospect_id, domain_id, association_status)
+            VALUES (%s, %s, 'unverified')
+            ON CONFLICT (prospect_id, domain_id) DO NOTHING
+            RETURNING id, association_status, created_at
+            """,
+            (prospect_id, payload.domain_id),
+        ).fetchone()
+        if not association:
+            association = conn.execute(
+                """
+                SELECT id, association_status, created_at
+                FROM prospect_domains
+                WHERE prospect_id = %s AND domain_id = %s
+                """,
+                (prospect_id, payload.domain_id),
+            ).fetchone()
+    return {
+        "association_id": association[0], "prospect_id": prospect_id,
+        "domain_id": domain[0], "domain": domain[1],
+        "association_status": association[1],
+        "associated_at": association[2].isoformat(),
+    }
 
 
 @app.post("/domains/{domain_id}/authorizations", dependencies=[Depends(require_api_key)])
