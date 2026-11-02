@@ -5,6 +5,7 @@ import uuid
 
 import psycopg
 import pytest
+from fastapi.testclient import TestClient
 
 from app import main
 
@@ -130,3 +131,83 @@ def test_scan_reservation_accepts_current_active_authorization(authorization_db)
     reservation = main.reserve_scan_capacity(1)
     assert reservation is not None
     main.release_scan_capacity(*reservation)
+
+
+def test_operator_can_create_list_disable_and_revoke_authorization(authorization_db, monkeypatch):
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(main.app)
+    headers = {"X-API-Key": "test-secret"}
+    payload = {
+        "basis_type": "written_permission",
+        "description": "Written approval for a limited, non-invasive review",
+        "evidence_reference": "internal-ticket-SEC-1042",
+        "granted_by": "Security contact",
+        "valid_from": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+        "valid_until": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+    }
+
+    created = client.post("/domains/1/authorizations", json=payload, headers=headers)
+    assert created.status_code == 200
+    record = created.json()
+    assert record["domain"] == "authorized.example"
+    assert record["basis_type"] == "written_permission"
+    assert record["target_status"] == "active"
+
+    listed = client.get("/domains/1/authorizations", headers=headers)
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+    assert listed.json()[0]["currently_authorized"] is True
+
+    disabled = client.patch(
+        f"/scan-targets/{record['scan_target_id']}",
+        json={"status": "disabled"},
+        headers=headers,
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["status"] == "disabled"
+    with pytest.raises(main.ScanAuthorizationError):
+        main.reserve_scan_capacity(1)
+
+    reenabled = client.patch(
+        f"/scan-targets/{record['scan_target_id']}",
+        json={"status": "active"},
+        headers=headers,
+    )
+    assert reenabled.status_code == 200
+    assert main.reserve_scan_capacity(1) is not None
+
+
+def test_revoking_authorization_prevents_future_scan_reservations(authorization_db, monkeypatch):
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(main.app)
+    headers = {"X-API-Key": "test-secret"}
+    _add_target(authorization_db)
+
+    with authorization_db() as conn:
+        authorization_id = conn.execute(
+            "SELECT id FROM authorization_bases WHERE domain_id = 1"
+        ).fetchone()[0]
+
+    response = client.post(f"/authorizations/{authorization_id}/revoke", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["authorization_id"] == authorization_id
+    with pytest.raises(main.ScanAuthorizationError):
+        main.reserve_scan_capacity(1)
+
+
+def test_create_authorization_rejects_invalid_date_range(authorization_db, monkeypatch):
+    monkeypatch.setattr(main, "API_KEY", "test-secret")
+    client = TestClient(main.app)
+    now = datetime.now(timezone.utc)
+    response = client.post(
+        "/domains/1/authorizations",
+        headers={"X-API-Key": "test-secret"},
+        json={
+            "basis_type": "written_permission",
+            "evidence_reference": "approval-123",
+            "granted_by": "Authorized contact",
+            "valid_from": now.isoformat(),
+            "valid_until": (now - timedelta(seconds=1)).isoformat(),
+        },
+    )
+    assert response.status_code == 400

@@ -15,6 +15,7 @@ import httpx
 import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+from typing import Literal
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 API_KEY = os.getenv("SCANNER_API_KEY", "")
@@ -82,6 +83,19 @@ def startup():
                 notes TEXT NOT NULL DEFAULT ''
             )
         """)
+
+
+class AuthorizationGrant(BaseModel):
+    basis_type: Literal["written_permission", "contract", "other"]
+    description: str = Field(default="", max_length=2000)
+    evidence_reference: str = Field(min_length=1, max_length=1000)
+    granted_by: str = Field(min_length=1, max_length=200)
+    valid_from: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    valid_until: datetime | None = None
+
+
+class ScanTargetStatus(BaseModel):
+    status: Literal["active", "disabled"]
 
 
 class DomainImport(BaseModel):
@@ -376,6 +390,136 @@ def list_domains(limit: int = 100, offset: int = 0, q: str | None = None):
                 (limit, offset),
             ).fetchall()
     return [{"id": r[0], "domain": r[1], "source": r[2], "created_at": r[3].isoformat(), "verified_at": r[4].isoformat() if r[4] else None, "verified": r[4] is not None} for r in rows]
+
+
+
+@app.post("/domains/{domain_id}/authorizations", dependencies=[Depends(require_api_key)])
+def create_authorization(domain_id: int, payload: AuthorizationGrant):
+    if not payload.evidence_reference.strip() or not payload.granted_by.strip():
+        raise HTTPException(400, "evidence_reference og granted_by skal indeholde tekst")
+    if payload.valid_from.tzinfo is None or payload.valid_from.utcoffset() is None:
+        raise HTTPException(400, "valid_from skal indeholde tidszone")
+    if payload.valid_until is not None:
+        if payload.valid_until.tzinfo is None or payload.valid_until.utcoffset() is None:
+            raise HTTPException(400, "valid_until skal indeholde tidszone")
+        if payload.valid_until <= payload.valid_from:
+            raise HTTPException(400, "valid_until skal ligge efter valid_from")
+
+    with db_connect() as conn:
+        domain = conn.execute(
+            "SELECT id, domain FROM domains WHERE id = %s",
+            (domain_id,),
+        ).fetchone()
+        if not domain:
+            raise HTTPException(404, "Domæne ikke fundet")
+        basis = conn.execute(
+            """
+            INSERT INTO authorization_bases
+                (domain_id, basis_type, description, evidence_reference, granted_by, valid_from, valid_until)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, created_at, revoked_at
+            """,
+            (domain_id, payload.basis_type, payload.description, payload.evidence_reference,
+             payload.granted_by, payload.valid_from, payload.valid_until),
+        ).fetchone()
+        target = conn.execute(
+            """
+            INSERT INTO scan_targets(domain_id, authorization_basis_id, status)
+            VALUES (%s, %s, 'active')
+            RETURNING id, status, created_at
+            """,
+            (domain_id, basis[0]),
+        ).fetchone()
+
+    return {
+        "authorization_id": basis[0],
+        "domain_id": domain[0],
+        "domain": domain[1],
+        "basis_type": payload.basis_type,
+        "description": payload.description,
+        "evidence_reference": payload.evidence_reference,
+        "granted_by": payload.granted_by,
+        "valid_from": payload.valid_from.isoformat(),
+        "valid_until": payload.valid_until.isoformat() if payload.valid_until else None,
+        "created_at": basis[1].isoformat(),
+        "revoked_at": basis[2].isoformat() if basis[2] else None,
+        "scan_target_id": target[0],
+        "target_status": target[1],
+        "target_created_at": target[2].isoformat(),
+    }
+
+
+@app.get("/domains/{domain_id}/authorizations", dependencies=[Depends(require_api_key)])
+def list_authorizations(domain_id: int):
+    with db_connect() as conn:
+        if not conn.execute("SELECT id FROM domains WHERE id = %s", (domain_id,)).fetchone():
+            raise HTTPException(404, "Domæne ikke fundet")
+        rows = conn.execute(
+            """
+            SELECT ab.id, ab.basis_type, ab.description, ab.evidence_reference,
+                   ab.granted_by, ab.valid_from, ab.valid_until, ab.created_at,
+                   ab.revoked_at, st.id, st.status,
+                   (ab.revoked_at IS NULL AND ab.valid_from <= now()
+                    AND (ab.valid_until IS NULL OR ab.valid_until > now())
+                    AND st.status = 'active') AS currently_authorized
+            FROM authorization_bases AS ab
+            JOIN scan_targets AS st
+              ON st.authorization_basis_id = ab.id AND st.domain_id = ab.domain_id
+            WHERE ab.domain_id = %s
+            ORDER BY ab.created_at DESC, ab.id DESC
+            """,
+            (domain_id,),
+        ).fetchall()
+    return [
+        {
+            "authorization_id": r[0], "basis_type": r[1], "description": r[2],
+            "evidence_reference": r[3], "granted_by": r[4],
+            "valid_from": r[5].isoformat(),
+            "valid_until": r[6].isoformat() if r[6] else None,
+            "created_at": r[7].isoformat(),
+            "revoked_at": r[8].isoformat() if r[8] else None,
+            "scan_target_id": r[9], "target_status": r[10],
+            "currently_authorized": r[11],
+        }
+        for r in rows
+    ]
+
+
+@app.post("/authorizations/{authorization_id}/revoke", dependencies=[Depends(require_api_key)])
+def revoke_authorization(authorization_id: int):
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE authorization_bases
+            SET revoked_at = COALESCE(revoked_at, now())
+            WHERE id = %s
+            RETURNING id, domain_id, revoked_at
+            """,
+            (authorization_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Autorisationsgrundlag ikke fundet")
+    return {"authorization_id": row[0], "domain_id": row[1], "revoked_at": row[2].isoformat()}
+
+
+@app.patch("/scan-targets/{target_id}", dependencies=[Depends(require_api_key)])
+def set_scan_target_status(target_id: int, payload: ScanTargetStatus):
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE scan_targets
+            SET status = %s
+            WHERE id = %s
+            RETURNING id, domain_id, authorization_basis_id, status
+            """,
+            (payload.status, target_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Scanmål ikke fundet")
+    return {
+        "scan_target_id": row[0], "domain_id": row[1],
+        "authorization_id": row[2], "status": row[3],
+    }
 
 
 class ScanAuthorizationError(Exception):

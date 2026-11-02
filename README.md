@@ -26,6 +26,46 @@ whether a server is vulnerable.
 
 DNS answers are validated and the TCP connection is pinned to an approved public IP. This remains defense in depth, not a complete egress security boundary.
 
+## Authorization workflow
+
+Domain TXT verification proves DNS control only; it is not permission to scan.
+Before scanning, the operator must record an explicit authorization basis for
+the exact domain. All endpoints below require the `X-API-Key` header.
+
+- `POST /domains/{domain_id}/authorizations` records the basis and creates an
+  active scan target. Required fields: `basis_type` (`written_permission`,
+  `contract`, or `other`), `evidence_reference`, and `granted_by`. Optional
+  fields: `description`, `valid_from` (timezone-aware ISO 8601; defaults to
+  now), and `valid_until`.
+- `GET /domains/{domain_id}/authorizations` lists the domain's authorization
+  records and whether each is currently valid and enabled.
+- `PATCH /scan-targets/{target_id}` accepts `{"status":"disabled"}` or
+  `{"status":"active"}` to disable or re-enable a target.
+- `POST /authorizations/{authorization_id}/revoke` permanently records
+  revocation. A revoked basis cannot be reactivated; create a new authorization
+  record if new permission is granted.
+
+Creating an authorization does not bypass the separate domain TXT verification
+requirement. A scan requires both a verified domain and a currently valid,
+non-revoked authorization with an active scan target. Keep the evidence
+reference tied to the actual written permission or contract; never treat DNS
+verification or mere domain ownership as permission to scan.
+
+Example request:
+
+```sh
+curl -X POST http://127.0.0.1:8787/domains/1/authorizations \
+  -H "X-API-Key: $SCANNER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "basis_type": "written_permission",
+    "evidence_reference": "internal-ticket-SEC-1042",
+    "granted_by": "Named security contact",
+    "valid_from": "2026-11-02T09:00:00+01:00",
+    "valid_until": "2026-12-02T09:00:00+01:00"
+  }'
+```
+
 ## Scan rate limits
 
 - At most 4 scans may hold a global database-backed capacity slot at once.
@@ -80,13 +120,13 @@ This is an MVP, not a production-ready national scanning platform.
 
 Not yet implemented:
 
-- Authorization-basis enforcement in the scan API (the new database tables are foundation only)
+- A browser-based operator interface for authorization management
 - Persistent background job queue and scheduling
 - Authoritative PHP/vendor advisory database
 - CVE and distribution-specific package assessment
 - Local read-only PHP runtime agent
 - Comprehensive automated security and integration tests
-- Full audit and authorization model for multiple users
+- Multi-user roles and a full multi-user audit model (out of scope for the single-operator MVP)
 
 No vulnerability conclusion should be derived solely from an externally
 observed PHP version or response header.

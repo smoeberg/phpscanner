@@ -24,6 +24,6 @@ Take a verified PostgreSQL backup before deploying any schema change. Test the m
 
 Domain-control TXT verification proves control of a DNS name for the challenge period; it is not equivalent to authorization to perform a security assessment. The new `authorization_bases` and `scan_targets` tables are the data foundation only. The scan endpoint now requires an active `scan_targets` row backed by a currently valid, non-revoked `authorization_bases` row for the exact domain. The check is performed in the same PostgreSQL transaction as scan-capacity reservation. Missing, future-dated, expired, revoked, or disabled authorization fails closed with HTTP 403. DNS TXT verification remains a separate domain-control check and is not accepted as scanning permission.
 
-This milestone implements enforcement, not yet an operator-facing API for creating and revoking authorization records. Until that workflow is added, records must only be provisioned through a controlled administrative process; do not insert grants based solely on domain verification.
+The protected operator API now supports creating and listing authorization records, disabling/re-enabling scan targets, and permanently revoking an authorization basis. Every action requires the scanner API key. The operator must retain a reference to the actual permission evidence; DNS verification must never be used as a substitute.
 
 Historical scans intentionally remain associated only with their existing `domain_id`.
