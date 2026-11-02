@@ -104,7 +104,7 @@ until a separately reviewed public-access architecture is implemented.
    docker compose ps
    ```
 
-   Both API and worker containers run `alembic upgrade head` before starting their process. Compose starts the separate worker automatically.
+   The API container runs `alembic upgrade head` before starting FastAPI and exposes a health check. Compose starts the separate worker only after the API is healthy, so the worker never races the schema migration.
    Back up PostgreSQL before deploying schema changes. See
    [migrations/README.md](migrations/README.md) for the migration policy.
 
