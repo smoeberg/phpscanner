@@ -146,7 +146,7 @@ def test_operator_can_import_authorize_scan_review_and_export(
         }
 
     monkeypatch.setattr(main, "probe", fake_probe)
-    asyncio.run(worker.process_job(claim))
+    asyncio.run(worker.process_job(claimed))
 
     completed = client.get(f"/scan-jobs/{job_id}", headers=headers)
     assert completed.status_code == 200
