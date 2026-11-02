@@ -61,6 +61,26 @@ def postgres_jobs(monkeypatch):
                 )
             """)
             conn.execute("""
+                CREATE TABLE scan_findings (
+                    id BIGSERIAL PRIMARY KEY,
+                    scan_id BIGINT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+                    finding_type TEXT NOT NULL,
+                    assessment TEXT NOT NULL
+                        CHECK (assessment IN ('disclosed', 'possible', 'undetermined')),
+                    confidence TEXT NOT NULL
+                        CHECK (confidence IN ('high', 'low', 'undetermined')),
+                    version_observed TEXT,
+                    rationale TEXT NOT NULL,
+                    evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (scan_id, finding_type)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX ix_scan_findings_scan_id
+                ON scan_findings(scan_id, id)
+            """)
+            conn.execute("""
                 CREATE TABLE scan_jobs (
                     id BIGSERIAL PRIMARY KEY,
                     domain_id BIGINT NOT NULL REFERENCES domains(id),
