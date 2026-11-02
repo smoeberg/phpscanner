@@ -347,7 +347,7 @@ def test_results_csv_streams_bounded_batches_without_fetchall(monkeypatch):
         def __init__(self):
             self.batches = [
                 [("example.com", "2026-10-30T12:00:00+00:00", 200, "nginx", "PHP/8.3", True, "8.3", "version-disclosed", "ok",
-                  "php_runtime_disclosure", "disclosed", "high", "8.3", "Header disclosure only.", "[]")],
+                  "php_runtime_disclosure", "disclosed", "high", "8.3", "Header disclosure only.", "[]", "[]")],
                 [],
             ]
             self.fetch_sizes = []
@@ -397,7 +397,9 @@ def test_results_csv_streams_bounded_batches_without_fetchall(monkeypatch):
     assert "example.com" in csv_text
     assert "PHP/8.3" in csv_text
     assert "finding_assessment" in csv_text.splitlines()[0]
+    assert "prospect_associations" in csv_text.splitlines()[0]
     assert "php_runtime_disclosure" in csv_text
+    assert "[]" in csv_text
     assert connection.fake_cursor.fetch_sizes == [500, 500]
 
 

@@ -982,6 +982,7 @@ def results_csv():
         "php_indicator", "version_observed", "scan_confidence", "notes",
         "finding_type", "finding_assessment", "finding_confidence",
         "finding_version_observed", "finding_rationale", "finding_evidence",
+        "prospect_associations",
     ]
 
     def generate_csv():
@@ -993,7 +994,20 @@ def results_csv():
                     SELECT d.domain,s.scanned_at,s.status_code,s.server_header,s.powered_by,s.php_indicator,
                            s.version_observed,s.confidence,s.notes,
                            f.finding_type,f.assessment,f.confidence,f.version_observed,f.rationale,
-                           f.evidence::text
+                           f.evidence::text,
+                           COALESCE((
+                               SELECT jsonb_agg(
+                                   jsonb_build_object(
+                                       'prospect_id', p.id,
+                                       'prospect_name', p.name,
+                                       'association_status', pd.association_status
+                                   )
+                                   ORDER BY p.name, p.id
+                               )
+                               FROM prospect_domains AS pd
+                               JOIN prospects AS p ON p.id = pd.prospect_id
+                               WHERE pd.domain_id = d.id
+                           ), '[]'::jsonb)::text
                     FROM scans s
                     JOIN domains d ON d.id=s.domain_id
                     LEFT JOIN scan_findings f
