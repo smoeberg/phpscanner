@@ -1,6 +1,5 @@
 """SEC-15 PostgreSQL tests for crash recovery and sustained reservation churn."""
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 import threading
 
 from app import main
