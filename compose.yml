@@ -34,6 +34,23 @@ services:
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
 
+  worker:
+    image: dk-php-scanner-api:local
+    restart: unless-stopped
+    command: ["sh", "-c", "alembic upgrade head && exec python -m app.worker"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REQUEST_TIMEOUT_SECONDS: "8"
+      MAX_RESPONSE_BYTES: "65536"
+      SCAN_WORKER_POLL_SECONDS: "2"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [scanner_internal]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+
 networks:
   scanner_internal:
     driver: bridge
