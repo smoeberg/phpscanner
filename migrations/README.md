@@ -6,7 +6,7 @@ The application database schema is managed with Alembic. Run migrations with:
 alembic upgrade head
 ```
 
-The container entrypoint runs this command before starting the API.
+Both API and worker containers run this command before starting their process.
 
 ## Existing installations
 
@@ -27,3 +27,8 @@ Domain-control TXT verification proves control of a DNS name for the challenge p
 The protected operator API now supports creating and listing authorization records, disabling/re-enabling scan targets, and permanently revoking an authorization basis. Every action requires the scanner API key. The operator must retain a reference to the actual permission evidence; DNS verification must never be used as a substitute.
 
 Historical scans intentionally remain associated only with their existing `domain_id`.
+
+
+## Persistent scan jobs
+
+Revision `0002_scan_jobs` adds a durable queue without rewriting historical scan rows. Scan submissions create a queued job; a separate worker claims it with `FOR UPDATE SKIP LOCKED`, an expiring lease, and a fencing token. Expired running jobs can be reclaimed after a worker crash. A scan result is linked to its job with a unique nullable `scans.job_id`; existing scans retain NULL and remain unchanged. The worker rechecks domain verification and the current authorization before each execution. Failed transient attempts are bounded, and successful result persistence is idempotent per job.
