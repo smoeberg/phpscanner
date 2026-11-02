@@ -87,3 +87,16 @@ def test_operator_home_requires_current_authorization_before_enabling_scan_butto
     assert "scan.disabled = !d.verified || !currentlyAuthorized" in response.text
     assert "Gyldig tilladelse" in response.text
     assert "Ingen gyldig tilladelse" in response.text
+
+
+def test_operator_authorization_list_explains_validity_and_inactive_reasons():
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert 'new Date(a.valid_from).getTime()' in response.text
+    assert 'new Date(a.valid_until).getTime()' in response.text
+    assert 'if (a.revoked_at) status = "Tilbagekaldt"' in response.text
+    assert 'status = "Afventer start"' in response.text
+    assert 'status = "Udløbet"' in response.text
+    assert 'status = "Scanmål deaktiveret"' in response.text
+    assert '"Gyldig fra","Gyldig til","Status"' in response.text
