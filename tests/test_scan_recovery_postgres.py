@@ -7,12 +7,19 @@ from app import main
 from test_scan_capacity_postgres import postgres_reservations
 
 
-def _expire_slot(connect, slot_id):
+def _expire_slot(connect, reservation):
+    # Use PostgreSQL's clock so the test does not depend on host/database clock
+    # synchronization or wall-clock sleeps.
     with connect() as conn:
-        conn.execute(
-            "UPDATE scan_slots SET lease_until=%s WHERE slot_id=%s",
-            (datetime.now(timezone.utc) - timedelta(seconds=1), slot_id[0]),
+        updated = conn.execute(
+            """
+            UPDATE scan_slots
+            SET lease_until = now() - interval '1 second'
+            WHERE slot_id = %s AND lease_token = %s
+            """,
+            reservation,
         )
+        assert updated.rowcount == 1
 
 
 def test_worker_crash_keeps_live_lease_then_recovers_expired_slot(postgres_reservations):
@@ -157,46 +164,156 @@ def test_old_token_cannot_release_a_later_reservation_on_same_slot(postgres_rese
 
 
 
+def test_lease_expiry_boundary_uses_database_clock_without_sleep(postgres_reservations):
+    reservations = [main.reserve_scan_capacity(domain_id) for domain_id in (1, 2, 3, 4)]
+    assert all(reservation is not None for reservation in reservations)
+    expiring = reservations[0]
+
+    # A future lease must remain unavailable. Use a wide margin so scheduler
+    # delays cannot make this assertion flaky.
+    with postgres_reservations() as conn:
+        conn.execute(
+            """
+            UPDATE scan_slots
+            SET lease_until = now() + interval '1 hour'
+            WHERE slot_id = %s AND lease_token = %s
+            """,
+            expiring,
+        )
+    assert main.reserve_scan_capacity(5) is None
+
+    # Equality is the recovery boundary because production uses lease_until <= now().
+    # Setting it to the database's transaction timestamp avoids sleeping.
+    with postgres_reservations() as conn:
+        conn.execute(
+            """
+            UPDATE scan_slots
+            SET lease_until = now()
+            WHERE slot_id = %s AND lease_token = %s
+            """,
+            expiring,
+        )
+
+    recovered = main.reserve_scan_capacity(5)
+    assert recovered is not None
+    assert recovered[0] == expiring[0]
+    assert recovered[1] != expiring[1]
+
+    with postgres_reservations() as conn:
+        active_leases = conn.execute(
+            """
+            SELECT count(*)
+            FROM scan_slots
+            WHERE lease_until > now() AND lease_token IS NOT NULL
+            """
+        ).fetchone()[0]
+    assert active_leases == main.MAX_CONCURRENT_SCANS
+
+    main.release_scan_capacity(*recovered)
+    for reservation in reservations[1:]:
+        main.release_scan_capacity(*reservation)
+
+
 def test_stalled_worker_can_overlap_recovered_worker_probe(postgres_reservations):
-    """Expose that lease recovery limits leases, not necessarily live probes."""
+    """Prove the four-slot lease bound is not a hard live-probe bound after a stall."""
     worker_a = main.reserve_scan_capacity(1)
     assert worker_a is not None
 
-    probe_a_started = threading.Event()
-    allow_probe_a_to_finish = threading.Event()
+    active = {"count": 0}
+    active_lock = threading.Lock()
+    probe_threads = []
 
-    def worker_a_probe():
-        probe_a_started.set()
-        assert allow_probe_a_to_finish.wait(timeout=10)
+    def start_blocked_probe():
+        started = threading.Event()
+        finish = threading.Event()
 
-    thread_a = threading.Thread(target=worker_a_probe)
-    thread_a.start()
-    assert probe_a_started.wait(timeout=5)
+        def run_probe():
+            with active_lock:
+                active["count"] += 1
+            started.set()
+            try:
+                finish.wait(timeout=10)
+            finally:
+                with active_lock:
+                    active["count"] -= 1
 
-    # A is still executing its probe, but its lease expires and B takes over.
-    _expire_slot(postgres_reservations, worker_a)
-    worker_b = main.reserve_scan_capacity(2)
-    assert worker_b is not None
-    assert worker_b[0] == worker_a[0]
-    assert worker_b[1] != worker_a[1]
+        thread = threading.Thread(target=run_probe, daemon=True)
+        thread.start()
+        assert started.wait(timeout=5)
+        probe_threads.append((thread, finish))
+        return thread, finish
 
-    # Three more workers fill the remaining current leases.
-    other_workers = [main.reserve_scan_capacity(domain_id) for domain_id in (3, 4, 5)]
-    assert all(reservation is not None for reservation in other_workers)
+    def active_probe_count():
+        with active_lock:
+            return active["count"]
 
-    # A, B and C/D/E are all represented as executing probes: five live
-    # probes despite only four current PostgreSQL leases.
-    active_probe_count = 1 + 1 + len(other_workers)
-    assert active_probe_count == main.MAX_CONCURRENT_SCANS + 1
+    _thread_a, finish_a = start_blocked_probe()
+    worker_b = None
+    other_workers = []
+    try:
+        # A's probe remains active while its database lease expires. B recovers
+        # the same slot with a new fencing token and begins its own probe.
+        _expire_slot(postgres_reservations, worker_a)
+        worker_b = main.reserve_scan_capacity(2)
+        assert worker_b is not None
+        assert worker_b[0] == worker_a[0]
+        assert worker_b[1] != worker_a[1]
+        _thread_b, finish_b = start_blocked_probe()
 
-    # A's late finally/release is fenced and cannot clear B's current lease.
-    main.release_scan_capacity(*worker_a)
-    assert main.reserve_scan_capacity(6) is None
+        # Fill the other three slots and start three more probes.
+        other_workers = [main.reserve_scan_capacity(domain_id) for domain_id in (3, 4, 5)]
+        assert all(reservation is not None for reservation in other_workers)
+        other_finishes = [start_blocked_probe()[1] for _ in other_workers]
 
-    allow_probe_a_to_finish.set()
-    thread_a.join(timeout=5)
-    assert not thread_a.is_alive()
+        assert active_probe_count() == main.MAX_CONCURRENT_SCANS + 1
 
-    main.release_scan_capacity(*worker_b)
-    for reservation in other_workers:
-        main.release_scan_capacity(*reservation)
+        with postgres_reservations() as conn:
+            before_release = conn.execute(
+                """
+                SELECT count(*)
+                FROM scan_slots
+                WHERE lease_until > now() AND lease_token IS NOT NULL
+                """
+            ).fetchone()[0]
+        assert before_release == main.MAX_CONCURRENT_SCANS
+
+        # A's stale finally block must be a no-op: B still owns the slot and
+        # no fifth current lease can be granted.
+        main.release_scan_capacity(*worker_a)
+        with postgres_reservations() as conn:
+            current_owner = conn.execute(
+                "SELECT lease_token FROM scan_slots WHERE slot_id = %s",
+                (worker_b[0],),
+            ).fetchone()[0]
+            after_stale_release = conn.execute(
+                """
+                SELECT count(*)
+                FROM scan_slots
+                WHERE lease_until > now() AND lease_token IS NOT NULL
+                """
+            ).fetchone()[0]
+        assert current_owner == worker_b[1]
+        assert after_stale_release == main.MAX_CONCURRENT_SCANS
+        assert main.reserve_scan_capacity(6) is None
+
+        # Finish A. Four probes remain active and the four current leases are
+        # still owned by B/C/D/E.
+        finish_a.set()
+        probe_threads[0][0].join(timeout=5)
+        assert not probe_threads[0][0].is_alive()
+        assert active_probe_count() == main.MAX_CONCURRENT_SCANS
+
+        finish_b.set()
+        for finish in other_finishes:
+            finish.set()
+    finally:
+        for _thread, finish in probe_threads:
+            finish.set()
+        for thread, _finish in probe_threads:
+            thread.join(timeout=5)
+        if worker_b is not None:
+            main.release_scan_capacity(*worker_b)
+        for reservation in other_workers:
+            if reservation is not None:
+                main.release_scan_capacity(*reservation)
+
