@@ -866,3 +866,56 @@ def test_scan_job_status_is_api_key_protected_and_inspectable(monkeypatch):
     assert response.status_code == 200
     assert response.json()["status"] == "succeeded"
     assert response.json()["scan_id"] == 42
+
+
+def test_health_liveness_does_not_require_database(monkeypatch):
+    def unexpected_db_connect():
+        raise AssertionError("liveness must not connect to PostgreSQL")
+
+    monkeypatch.setattr(main, "db_connect", unexpected_db_connect)
+    response = TestClient(app).get("/health/live")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.headers.get("X-Request-ID")
+
+
+def test_health_readiness_checks_database(monkeypatch):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query):
+            assert query == "SELECT 1"
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_health_readiness_returns_503_when_database_is_unavailable(monkeypatch):
+    import psycopg
+
+    def unavailable():
+        raise psycopg.OperationalError("private database detail")
+
+    monkeypatch.setattr(main, "db_connect", unavailable)
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Database unavailable"
+    assert "private database detail" not in response.text
+
+
+def test_legacy_health_endpoint_remains_a_readiness_alias(monkeypatch):
+    class FakeConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, query): assert query == "SELECT 1"
+
+    monkeypatch.setattr(main, "db_connect", lambda: FakeConnection())
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "dk-php-exposure-scanner"
