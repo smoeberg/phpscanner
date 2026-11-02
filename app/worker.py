@@ -10,7 +10,6 @@ import asyncio
 import logging
 import os
 import secrets
-import time
 
 import psycopg
 
