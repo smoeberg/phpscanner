@@ -52,13 +52,21 @@ until a separately reviewed public-access architecture is implemented.
 4. Restrict access to .env using chmod 600 .env.
 5. Validate and start the services:
 
+   ```sh
    docker compose config --quiet
    docker compose up -d --build
    docker compose ps
+   ```
+
+   The API container runs `alembic upgrade head` before starting FastAPI.
+   Back up PostgreSQL before deploying schema changes. See
+   [migrations/README.md](migrations/README.md) for the migration policy.
 
 6. Open an SSH tunnel:
 
+   ```sh
    ssh -L 8787:127.0.0.1:8787 root@YOUR_SERVER
+   ```
 
 7. Open http://127.0.0.1:8787/docs.
 
@@ -72,10 +80,11 @@ This is an MVP, not a production-ready national scanning platform.
 
 Not yet implemented:
 
+- Authorization-basis enforcement in the scan API (the new database tables are foundation only)
+- Persistent background job queue and scheduling
 - Authoritative PHP/vendor advisory database
 - CVE and distribution-specific package assessment
 - Local read-only PHP runtime agent
-- Background job queue and scheduling
 - Comprehensive automated security and integration tests
 - Full audit and authorization model for multiple users
 
