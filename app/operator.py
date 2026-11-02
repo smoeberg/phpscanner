@@ -80,6 +80,12 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 </section>
 
 <section class="panel">
+<h2>Seneste scanninger</h2>
+<p class="muted">Viser de seneste registrerede HTTP-observationer. En PHP-indikation er ikke i sig selv dokumentation for en sårbarhed.</p>
+<div id="scan-results"><p class="muted">Forbind for at hente scanneresultater.</p></div>
+</section>
+
+<section class="panel">
 <h2>Autorisation</h2>
 <p class="muted">Vælg et domæne-ID og registrer den konkrete tilladelse. Sørg for, at evidencereferencen peger på den faktiske aftale eller skriftlige tilladelse.</p>
 <form id="authorization-form">
@@ -135,7 +141,9 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
   }
   async function refresh() {
     try {
-      const [prospects, domains] = await Promise.all([api("/prospects"), api("/domains")]);
+      const [prospects, domains, scans] = await Promise.all([
+        api("/prospects"), api("/domains"), api("/results?limit=100&offset=0")
+      ]);
       const pRows = prospects.map(p => [
         p.id, p.name, p.organization_number || "—",
         p.domains.map(d => d.domain + " (" + d.association_status + ")").join(", ") || "Ingen domæner"
@@ -161,7 +169,20 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
         return [d.id,d.domain,d.verified?"Verificeret":"Ikke verificeret",actions];
       });
       $("domain-list").replaceChildren(table(["ID","Domæne","DNS-status","Handlinger"],dRows));
-      message("Data opdateret. "+prospects.length+" prospects og "+domains.length+" domæner hentet.");
+      const scanRows = scans.map(scan => [
+        scan.scanned_at ? new Date(scan.scanned_at).toLocaleString() : "—",
+        scan.domain,
+        scan.status_code ?? "Intet HTTP-svar",
+        scan.php_indicator ? "Observeret" : "Ikke observeret",
+        scan.version_observed || "Ikke oplyst",
+        scan.confidence,
+        scan.notes || "—"
+      ]);
+      $("scan-results").replaceChildren(
+        scanRows.length ? table(["Tidspunkt","Domæne","HTTP-status","PHP-indikation","Observeret version","Vurdering","Noter"],scanRows)
+          : el("p","Ingen scanninger er registreret endnu.","muted")
+      );
+      message("Data opdateret. "+prospects.length+" prospects, "+domains.length+" domæner og "+scans.length+" scanninger hentet.");
     } catch(e) { message(e.message); }
   }
   async function loadAuthorizations(domainId) {
