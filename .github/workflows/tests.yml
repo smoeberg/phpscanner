@@ -51,3 +51,12 @@ jobs:
           DATABASE_URL: postgresql://test:test@localhost:5432/test
           SCANNER_API_KEY: test-secret
         run: python -m pytest -q
+
+  compose-startup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify fresh Compose deployment
+        run: bash scripts/verify-compose-startup.sh
