@@ -26,6 +26,22 @@ whether a server is vulnerable.
 
 DNS answers are validated and the TCP connection is pinned to an approved public IP. This remains defense in depth, not a complete egress security boundary.
 
+## Prospect and domain management
+
+All endpoints below require the `X-API-Key` header. Create a prospect with
+`POST /prospects` using a required `name` and optional
+`organization_number`, `website_url`, and `notes`. List prospects and their
+associated domains with `GET /prospects`; optional `limit`, `offset`, and
+`q` parameters provide bounded pagination and name/organization-number
+filtering.
+
+Associate an already imported domain using
+`POST /prospects/{prospect_id}/domains` with a `domain_id`. The association
+is created as `unverified` and repeated requests for the same pair are
+idempotent. This is only an organizational link: it does not verify ownership,
+change domain DNS verification, create an authorization basis, or permit a
+scan. Historical scans remain attached only to their existing domain records.
+
 ## Authorization workflow
 
 Domain TXT verification proves DNS control only; it is not permission to scan.
