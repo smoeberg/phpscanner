@@ -69,7 +69,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 <div><label for="associate-domain">Domæne-ID</label><input id="associate-domain" type="number" min="1"></div>
 <button id="associate">Tilknyt domæne</button>
 </div>
-<div class="row"><button class="secondary" id="refresh">Opdater oversigt</button></div>
+<div class="row"><div><label for="list-search">Søg i prospects og domæner</label><input id="list-search" type="search" maxlength="253" placeholder="Navn, organisationsnummer eller domæne"></div><button class="secondary" id="search-lists">Søg</button><button class="secondary" id="refresh">Opdater oversigt</button></div>
 <div id="prospects"></div>
 </section>
 
@@ -121,6 +121,10 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
   let scanOffset = 0;
   const scanPageSize = 100;
   const $ = (id) => document.getElementById(id);
+  const listSearch = () => {
+    const query = $("list-search").value.trim();
+    return query ? "?q=" + encodeURIComponent(query) : "";
+  };
   const message = (text) => { $("message").textContent = text; };
   const el = (tag, text, className) => {
     const node = document.createElement(tag);
@@ -150,7 +154,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
   async function refresh() {
     try {
       const [prospects, domains, scans] = await Promise.all([
-        api("/prospects"), api("/domains"), api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)
+        api("/prospects" + listSearch()), api("/domains" + listSearch()), api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)
       ]);
       const pRows = prospects.map(p => [
         p.id, p.name, p.organization_number || "—",
@@ -294,6 +298,10 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
     try{await refresh();}catch(e){apiKey="";message(e.message);}
   });
   $("refresh").addEventListener("click",refresh);
+  $("search-lists").addEventListener("click",refresh);
+  $("list-search").addEventListener("keydown",event=>{
+    if(event.key==="Enter"){event.preventDefault();refresh();}
+  });
   $("scan-prev").addEventListener("click",async()=>{
     scanOffset=Math.max(0,scanOffset-scanPageSize);
     await refresh();
