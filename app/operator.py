@@ -247,9 +247,23 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
         const disable=el("button",a.target_status==="active"?"Deaktivér mål":"Aktivér mål");disable.className="secondary";
         disable.addEventListener("click",async()=>{try{await api("/scan-targets/"+a.scan_target_id,{method:"PATCH",body:JSON.stringify({status:a.target_status==="active"?"disabled":"active"})});await loadAuthorizations(domainId);}catch(e){message(e.message);}});
         actions.append(revoke,disable);
-        return [a.authorization_id,a.basis_type,a.evidence_reference,a.granted_by,a.currently_authorized?"Aktiv":"Ikke aktiv",actions];
+        const now = Date.now();
+        const validFrom = new Date(a.valid_from).getTime();
+        const validUntil = a.valid_until ? new Date(a.valid_until).getTime() : null;
+        let status = "Ukendt status";
+        if (a.revoked_at) status = "Tilbagekaldt";
+        else if (validFrom > now) status = "Afventer start";
+        else if (validUntil !== null && validUntil <= now) status = "Udløbet";
+        else if (a.target_status !== "active") status = "Scanmål deaktiveret";
+        else if (a.currently_authorized) status = "Aktiv";
+        return [
+          a.authorization_id, a.basis_type, a.evidence_reference, a.granted_by,
+          new Date(a.valid_from).toLocaleString(),
+          a.valid_until ? new Date(a.valid_until).toLocaleString() : "Ingen udløbsdato",
+          status, actions
+        ];
       });
-      $("authorizations").replaceChildren(table(["ID","Grundlag","Evidens","Givet af","Status","Handlinger"],output));
+      $("authorizations").replaceChildren(table(["ID","Grundlag","Evidens","Givet af","Gyldig fra","Gyldig til","Status","Handlinger"],output));
     } catch(e){message(e.message);}
   }
   async function pollJob(id) {
