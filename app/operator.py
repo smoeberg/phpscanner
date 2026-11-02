@@ -150,7 +150,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
   async function refresh() {
     try {
       const [prospects, domains, scans] = await Promise.all([
-        api("/prospects"), api("/domains"), api("/results?limit=" + scanPageSize + "&offset=" + scanOffset)
+        api("/prospects"), api("/domains"), api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)
       ]);
       const pRows = prospects.map(p => [
         p.id, p.name, p.organization_number || "—",
@@ -188,7 +188,9 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
         ];
       }));
       $("domain-list").replaceChildren(table(["ID","Domæne","DNS-status","Scanningstilladelse","Handlinger"],dRows));
-      const scanRows = scans.map(scan => {
+      const hasMoreScans = scans.length > scanPageSize;
+      const visibleScans = scans.slice(0, scanPageSize);
+      const scanRows = visibleScans.map(scan => {
         const actions = el("div");
         const details = el("button","Vis detaljer");
         details.className = "secondary";
@@ -210,9 +212,9 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
           : el("p",scanOffset ? "Ingen flere scanninger på denne side." : "Ingen scanninger er registreret endnu.","muted")
       );
       $("scan-prev").disabled = scanOffset === 0;
-      $("scan-next").disabled = scans.length < scanPageSize;
+      $("scan-next").disabled = !hasMoreScans;
       $("scan-page").textContent = "Side " + (Math.floor(scanOffset / scanPageSize) + 1);
-      message("Data opdateret. "+prospects.length+" prospects, "+domains.length+" domæner og "+scans.length+" scanninger hentet.");
+      message("Data opdateret. "+prospects.length+" prospects, "+domains.length+" domæner og "+visibleScans.length+" scanninger hentet.");
     } catch(e) { message(e.message); }
   }
   async function loadScanDetails(scanId) {
