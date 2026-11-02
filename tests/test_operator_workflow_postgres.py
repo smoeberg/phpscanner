@@ -193,3 +193,95 @@ def test_operator_can_import_authorize_scan_review_and_export(
     assert "disclosed" in csv_lines[1]
 
     assert authorization_data["scan_target_id"]
+
+
+def test_operator_can_create_list_prospects_and_associate_domains(
+    operator_workflow_db, monkeypatch
+):
+    monkeypatch.setattr(main, "API_KEY", "prospect-test-secret")
+    client = TestClient(main.app)
+    headers = {"X-API-Key": "prospect-test-secret"}
+
+    assert client.get("/prospects").status_code == 401
+    assert client.post("/prospects", json={"name": "Unauthorized"}).status_code == 401
+
+    created = client.post(
+        "/prospects",
+        headers=headers,
+        json={
+            "name": "  Example Organization  ",
+            "organization_number": " 12345678 ",
+            "website_url": "https://example.com",
+            "notes": "Internal research prospect",
+        },
+    )
+    assert created.status_code == 201
+    prospect = created.json()
+    assert prospect["name"] == "Example Organization"
+    assert prospect["organization_number"] == "12345678"
+    assert prospect["domains"] == []
+
+    imported = client.post(
+        "/domains/import",
+        headers=headers,
+        json={"domains": ["example.com"], "source": "prospect-test"},
+    )
+    assert imported.status_code == 200
+    domain_id = client.get("/domains", headers=headers).json()[0]["id"]
+
+    missing_prospect = client.post(
+        "/prospects/999999/domains",
+        headers=headers,
+        json={"domain_id": domain_id},
+    )
+    assert missing_prospect.status_code == 404
+    missing_domain = client.post(
+        f"/prospects/{prospect['id']}/domains",
+        headers=headers,
+        json={"domain_id": 999999},
+    )
+    assert missing_domain.status_code == 404
+
+    associated = client.post(
+        f"/prospects/{prospect['id']}/domains",
+        headers=headers,
+        json={"domain_id": domain_id},
+    )
+    assert associated.status_code == 200
+    association = associated.json()
+    assert association["domain"] == "example.com"
+    assert association["association_status"] == "unverified"
+
+    repeated = client.post(
+        f"/prospects/{prospect['id']}/domains",
+        headers=headers,
+        json={"domain_id": domain_id},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["association_id"] == association["association_id"]
+
+    # Prospect association and DNS control do not grant scan authorization.
+    with operator_workflow_db() as conn:
+        conn.execute(
+            "UPDATE domains SET verified_at = now() WHERE id = %s",
+            (domain_id,),
+        )
+    denied = client.post(f"/domains/{domain_id}/scan", headers=headers)
+    assert denied.status_code == 403
+
+    listed = client.get("/prospects", headers=headers)
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+    listed_prospect = listed.json()[0]
+    assert listed_prospect["id"] == prospect["id"]
+    assert listed_prospect["domains"] == [{
+        "association_id": association["association_id"],
+        "domain_id": domain_id,
+        "domain": "example.com",
+        "association_status": "unverified",
+        "associated_at": association["associated_at"],
+    }]
+
+    filtered = client.get("/prospects?q=12345678", headers=headers)
+    assert filtered.status_code == 200
+    assert len(filtered.json()) == 1
