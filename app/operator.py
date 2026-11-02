@@ -97,6 +97,12 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 <div id="authorizations"></div>
 </section>
 
+<section class="panel">
+<h2>CSV-eksport</h2>
+<p class="muted">Hent scanneresultater, fund og prospect-tilknytninger som CSV til videre behandling hos Sales.</p>
+<button id="export-csv">Download CSV</button>
+</section>
+
 <script>
 (() => {
   let apiKey = "";
@@ -190,6 +196,31 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
     try{await refresh();}catch(e){apiKey="";message(e.message);}
   });
   $("refresh").addEventListener("click",refresh);
+  $("export-csv").addEventListener("click", async () => {
+    const button = $("export-csv");
+    button.disabled = true;
+    try {
+      if (!apiKey) throw new Error("Indtast API-nøglen og forbind først.");
+      const response = await fetch("/results.csv", {headers: {"X-API-Key": apiKey}});
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || ("HTTP " + response.status));
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = el("a");
+      link.href = url;
+      link.download = "dk-php-scanner-results.csv";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      message("CSV-eksport hentet.");
+    } catch (error) {
+      message(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
   $("prospect-form").addEventListener("submit",async e=>{
     e.preventDefault();
     try{await api("/prospects",{method:"POST",body:JSON.stringify({name:$("prospect-name").value,organization_number:$("prospect-number").value||null,website_url:$("prospect-website").value||null,notes:$("prospect-notes").value})});e.target.reset();await refresh();}
