@@ -64,7 +64,7 @@ def _job_row(connect, job_id):
 def _slot_row(connect, slot_id):
     with connect() as conn:
         return conn.execute(
-            "SELECT lease_until, lease_token FROM scan_slots WHERE slot_id = %s",
+            "SELECT lease_until > now(), lease_token FROM scan_slots WHERE slot_id = %s",
             (slot_id,),
         ).fetchone()
 
@@ -107,7 +107,7 @@ def test_timeout_releases_real_postgres_reservation_and_allows_next_scan(
     assert len(released) == 1
     slot_id, token = released[0]
     assert token
-    assert _slot_row(connect, slot_id)[1] is None
+    assert _slot_row(connect, slot_id) == (False, None)
     assert main.reserve_scan_capacity(2) is not None
 
 
@@ -129,7 +129,7 @@ def test_probe_exception_releases_real_postgres_reservation(
     assert job_row[0] == "queued"
     assert job_row[4] == "Scan execution failed; see worker logs"
     assert len(released) == 1
-    assert _slot_row(connect, released[0][0])[1] is None
+    assert _slot_row(connect, released[0][0]) == (False, None)
     assert main.reserve_scan_capacity(2) is not None
 
 
@@ -188,6 +188,6 @@ def test_cleanup_failure_preserves_timeout_and_keeps_lease_occupied(
     assert job_row[4] == "Scan execution deadline exceeded"
     assert len(attempted_releases) == 1
     slot_id, token = attempted_releases[0]
-    lease_until, current_token = _slot_row(connect, slot_id)
-    assert lease_until is not None
+    lease_active, current_token = _slot_row(connect, slot_id)
+    assert lease_active is True
     assert current_token == token
