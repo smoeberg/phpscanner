@@ -5,14 +5,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 ENV_FILE="$(mktemp)"
+OVERRIDE_FILE="$(mktemp)"
+compose() {
+  docker compose --project-name phpscanner-startup-smoke --env-file "$ENV_FILE" -f compose.yml -f "$OVERRIDE_FILE" "$@"
+}
+
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ]; then
     echo "Compose startup verification failed; service logs follow:" >&2
-    docker compose --env-file "$ENV_FILE" logs --no-color || true
+    compose logs --no-color || true
   fi
-  docker compose --env-file "$ENV_FILE" down --volumes --remove-orphans || true
-  rm -f "$ENV_FILE"
+  compose down --volumes --remove-orphans || true
+  rm -f "$ENV_FILE" "$OVERRIDE_FILE"
   exit "$status"
 }
 trap cleanup EXIT
@@ -24,14 +29,18 @@ POSTGRES_PASSWORD=smoke-only-password
 SCANNER_API_KEY=smoke-only-api-key
 EOF
 
-compose() {
-  docker compose --env-file "$ENV_FILE" "$@"
-}
+cat > "$OVERRIDE_FILE" <<'EOF'
+services:
+  api:
+    image: dk-php-scanner-api:startup-smoke
+  worker:
+    image: dk-php-scanner-api:startup-smoke
+EOF
 
-# Start from an empty database volume so every migration must run on first boot.
+# Use a dedicated Compose project, volume, and image tag so local deployments are untouched.
 compose down --volumes --remove-orphans
 compose config --quiet
-docker build --tag dk-php-scanner-api:local .
+docker build --tag dk-php-scanner-api:startup-smoke .
 
 compose up -d
 
