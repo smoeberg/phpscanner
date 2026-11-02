@@ -63,7 +63,7 @@ def test_operator_home_displays_recent_scan_results_from_authenticated_api():
 
     assert response.status_code == 200
     assert 'id="scan-results"' in response.text
-    assert 'api("/results?limit=100&offset=0")' in response.text
+    assert 'api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)' in response.text
     assert '"PHP-indikation"' in response.text
     assert "En PHP-indikation er ikke i sig selv dokumentation for en sårbarhed." in response.text
 
@@ -100,3 +100,18 @@ def test_operator_authorization_list_explains_validity_and_inactive_reasons():
     assert 'status = "Udløbet"' in response.text
     assert 'status = "Scanmål deaktiveret"' in response.text
     assert '"Gyldig fra","Gyldig til","Status"' in response.text
+
+
+def test_operator_scan_history_has_offset_pagination_controls():
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert 'id="scan-prev"' in response.text
+    assert 'id="scan-next"' in response.text
+    assert 'id="scan-page"' in response.text
+    assert 'let scanOffset = 0;' in response.text
+    assert 'api("/results?limit=" + (scanPageSize + 1) + "&offset=" + scanOffset)' in response.text
+    assert 'const hasMoreScans = scans.length > scanPageSize;' in response.text
+    assert '$("scan-next").disabled = !hasMoreScans;' in response.text
+    assert 'scanOffset=Math.max(0,scanOffset-scanPageSize)' in response.text
+    assert 'scanOffset+=scanPageSize' in response.text
