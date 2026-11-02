@@ -688,6 +688,37 @@ def get_scan_job(job_id: int):
     }
 
 
+@app.get("/scans/{scan_id}/observations", dependencies=[Depends(require_api_key)])
+def get_scan_observations(scan_id: int):
+    with db_connect() as conn:
+        exists = conn.execute(
+            "SELECT id FROM scans WHERE id = %s",
+            (scan_id,),
+        ).fetchone()
+        if not exists:
+            raise HTTPException(404, "Scan ikke fundet")
+        rows = conn.execute(
+            """
+            SELECT id, observation_type, observed_value, source, observed_at, metadata
+            FROM scan_observations
+            WHERE scan_id = %s
+            ORDER BY id
+            """,
+            (scan_id,),
+        ).fetchall()
+    return [
+        {
+            "observation_id": row[0],
+            "observation_type": row[1],
+            "value": row[2],
+            "source": row[3],
+            "observed_at": row[4].isoformat(),
+            "metadata": row[5],
+        }
+        for row in rows
+    ]
+
+
 @app.get("/results", dependencies=[Depends(require_api_key)])
 def results(limit: int = 100, offset: int = 0):
     if not 1 <= limit <= 1000 or offset < 0:
