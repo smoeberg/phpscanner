@@ -719,6 +719,40 @@ def get_scan_observations(scan_id: int):
     ]
 
 
+@app.get("/scans/{scan_id}/findings", dependencies=[Depends(require_api_key)])
+def get_scan_findings(scan_id: int):
+    with db_connect() as conn:
+        exists = conn.execute(
+            "SELECT id FROM scans WHERE id = %s",
+            (scan_id,),
+        ).fetchone()
+        if not exists:
+            raise HTTPException(404, "Scan ikke fundet")
+        rows = conn.execute(
+            """
+            SELECT id, finding_type, assessment, confidence, version_observed,
+                   rationale, evidence, created_at
+            FROM scan_findings
+            WHERE scan_id = %s
+            ORDER BY id
+            """,
+            (scan_id,),
+        ).fetchall()
+    return [
+        {
+            "finding_id": row[0],
+            "finding_type": row[1],
+            "assessment": row[2],
+            "confidence": row[3],
+            "version_observed": row[4],
+            "rationale": row[5],
+            "evidence": row[6],
+            "created_at": row[7].isoformat(),
+        }
+        for row in rows
+    ]
+
+
 @app.get("/results", dependencies=[Depends(require_api_key)])
 def results(limit: int = 100, offset: int = 0):
     if not 1 <= limit <= 1000 or offset < 0:
@@ -756,7 +790,9 @@ def results_csv():
 
     columns = [
         "domain", "scanned_at", "status_code", "server_header", "x_powered_by",
-        "php_indicator", "version_observed", "confidence", "notes",
+        "php_indicator", "version_observed", "scan_confidence", "notes",
+        "finding_type", "finding_assessment", "finding_confidence",
+        "finding_version_observed", "finding_rationale", "finding_evidence",
     ]
 
     def generate_csv():
@@ -766,8 +802,14 @@ def results_csv():
             with conn.cursor(name="scanner_csv_export") as cursor:
                 cursor.execute("""
                     SELECT d.domain,s.scanned_at,s.status_code,s.server_header,s.powered_by,s.php_indicator,
-                           s.version_observed,s.confidence,s.notes
-                    FROM scans s JOIN domains d ON d.id=s.domain_id ORDER BY s.scanned_at DESC
+                           s.version_observed,s.confidence,s.notes,
+                           f.finding_type,f.assessment,f.confidence,f.version_observed,f.rationale,
+                           f.evidence::text
+                    FROM scans s
+                    JOIN domains d ON d.id=s.domain_id
+                    LEFT JOIN scan_findings f
+                      ON f.scan_id=s.id AND f.finding_type='php_runtime_disclosure'
+                    ORDER BY s.scanned_at DESC
                 """)
                 buffer = io.StringIO()
                 writer = csv.writer(buffer)
