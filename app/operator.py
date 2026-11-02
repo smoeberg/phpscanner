@@ -59,7 +59,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 <button>Opret prospect</button>
 </form>
 <form id="domain-form">
-<label for="domains">Importer domæner (ét pr. linje)</label><textarea id="domains" placeholder="example.com&#10;www.example.org" required></textarea>
+<label for="domain-import-input">Importer domæner (ét pr. linje)</label><textarea id="domain-import-input" placeholder="example.com&#10;www.example.org" required></textarea>
 <button>Importer domæner</button>
 <p class="muted">Import og tilknytning giver ikke tilladelse til scanning.</p>
 </form>
@@ -76,7 +76,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
 <section class="panel">
 <h2>Domæner og scanning</h2>
 <p class="muted">DNS TXT-verifikation dokumenterer domænekontrol, ikke scanningstilladelse. Opret først et separat autorisationsgrundlag med dokumentationsreference.</p>
-<div id="domains"></div>
+<div id="domain-list"></div>
 </section>
 
 <section class="panel">
@@ -154,7 +154,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
         actions.append(challenge,verify,auth,scan);
         return [d.id,d.domain,d.verified?"Verificeret":"Ikke verificeret",actions];
       });
-      $("domains").replaceChildren(table(["ID","Domæne","DNS-status","Handlinger"],dRows));
+      $("domain-list").replaceChildren(table(["ID","Domæne","DNS-status","Handlinger"],dRows));
       message("Data opdateret. "+prospects.length+" prospects og "+domains.length+" domæner hentet.");
     } catch(e) { message(e.message); }
   }
@@ -197,7 +197,7 @@ td button{font-size:.85rem}.status{padding:10px;background:#eef3f7;border-radius
   });
   $("domain-form").addEventListener("submit",async e=>{
     e.preventDefault();
-    try{const domains=$("domains").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);const result=await api("/domains/import",{method:"POST",body:JSON.stringify({domains,source:"operator-ui"})});message("Behandlet: "+result.processed+" · accepteret/eksisterende: "+result.accepted_or_existing+" · afvist: "+result.rejected.length);e.target.reset();await refresh();}
+    try{const domains=$("domain-import-input").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);const result=await api("/domains/import",{method:"POST",body:JSON.stringify({domains,source:"operator-ui"})});message("Behandlet: "+result.processed+" · accepteret/eksisterende: "+result.accepted_or_existing+" · afvist: "+result.rejected.length);e.target.reset();await refresh();}
     catch(err){message(err.message);}
   });
   $("associate").addEventListener("click",async()=>{
