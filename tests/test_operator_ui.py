@@ -124,9 +124,11 @@ def test_operator_lists_support_authenticated_search_filter():
     assert response.status_code == 200
     assert 'id="list-search"' in response.text
     assert 'id="search-lists"' in response.text
-    assert 'api("/prospects" + listSearch())' in response.text
-    assert 'api("/domains" + listSearch())' in response.text
-    assert 'encodeURIComponent(query)' in response.text
+    assert 'api("/prospects" + listQuery(prospectOffset))' in response.text
+    assert 'api("/domains" + listQuery(domainOffset))' in response.text
+    assert 'params.set("q", query)' in response.text
+    assert 'params.set("limit", String(listPageSize + 1))' in response.text
+    assert 'params.set("offset", String(offset))' in response.text
     assert '$("list-search").addEventListener("keydown"' in response.text
 
 
