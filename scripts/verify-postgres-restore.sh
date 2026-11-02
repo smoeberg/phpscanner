@@ -37,8 +37,8 @@ createdb --host "$PGHOST" --port "$PGPORT" --username "$PGUSER" "$RESTORE_DB"
 RESTORE_CREATED=1
 
 # Exercise the repository's actual Alembic migrations in a disposable database.
-export DATABASE_URL="$(python -c 'import os; from urllib.parse import quote; print("postgresql://" + quote(os.environ["PGUSER"], safe="") + ":" + quote(os.environ["PGPASSWORD"], safe="") + "@" + os.environ["PGHOST"] + ":" + os.environ["PGPORT"] + "/" + os.environ["SOURCE_DB"])')"
 export SOURCE_DB
+export DATABASE_URL="$(python -c 'import os; from urllib.parse import quote; print("postgresql://" + quote(os.environ["PGUSER"], safe="") + ":" + quote(os.environ["PGPASSWORD"], safe="") + "@" + os.environ["PGHOST"] + ":" + os.environ["PGPORT"] + "/" + os.environ["SOURCE_DB"])')"
 python -m alembic upgrade head
 
 psql --host "$PGHOST" --port "$PGPORT" --username "$PGUSER" --dbname "$SOURCE_DB" \
