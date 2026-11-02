@@ -7,6 +7,9 @@ import ipaddress
 import os
 import secrets
 import socket
+import time
+import uuid
+import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -17,6 +20,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
 
+from app.observability import configure_logger
+
 DATABASE_URL = os.environ["DATABASE_URL"]
 API_KEY = os.getenv("SCANNER_API_KEY", "")
 TIMEOUT = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
@@ -26,6 +31,37 @@ SCAN_COOLDOWN_SECONDS = 60
 SCAN_SLOT_LEASE_SECONDS = 90
 SCAN_EXECUTION_DEADLINE_SECONDS = 60
 app = FastAPI(title="DK PHP Exposure Scanner", version="0.1.0")
+logger = configure_logger("scanner.api")
+
+
+@app.middleware("http")
+async def log_http_requests(request, call_next):
+    request_id = uuid.uuid4().hex
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "http_request_failed",
+            extra={
+                "event": "http_request", "request_id": request_id,
+                "method": request.method, "path": request.url.path,
+                "status_code": 500,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
+        raise
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "http_request_completed",
+        extra={
+            "event": "http_request", "request_id": request_id,
+            "method": request.method, "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+        },
+    )
+    return response
 
 def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
     if not API_KEY or not x_api_key or not hmac.compare_digest(x_api_key, API_KEY):
@@ -297,11 +333,28 @@ async def probe(domain: str) -> dict:
     }
 
 
+@app.get("/health/live")
+def health_live():
+    """Liveness only: this process can serve requests."""
+    return {"status": "ok", "service": "dk-php-exposure-scanner"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness: the API can reach its required PostgreSQL database."""
+    try:
+        with db_connect() as conn:
+            conn.execute("SELECT 1")
+    except psycopg.Error:
+        logger.warning("readiness_check_failed", extra={"event": "readiness_check", "status_code": 503})
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"status": "ok", "service": "dk-php-exposure-scanner", "time": datetime.now(timezone.utc).isoformat()}
+
+
 @app.get("/health")
 def health():
-    with db_connect() as conn:
-        conn.execute("SELECT 1")
-    return {"status": "ok", "service": "dk-php-exposure-scanner", "time": datetime.now(timezone.utc).isoformat()}
+    """Backward-compatible readiness endpoint."""
+    return health_ready()
 
 
 @app.post("/domains/import", dependencies=[Depends(require_api_key)])
