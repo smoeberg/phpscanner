@@ -6,7 +6,7 @@ The application database schema is managed with Alembic. Run migrations with:
 alembic upgrade head
 ```
 
-Both API and worker containers run this command before starting their process.
+The API container runs this command before starting FastAPI. Compose waits for the API health check before starting the worker, avoiding concurrent migration attempts.
 
 ## Existing installations
 
